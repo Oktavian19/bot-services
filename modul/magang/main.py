@@ -226,7 +226,7 @@ def init_magang(bot):
             t.start()
             
             try:
-                bot.send_message(chat_id, "🔄 Server baru saja di-restart. Pemantauan Anda otomatis dilanjutkan!")
+                print("🔄 Server baru saja di-restart. Pemantauan dilanjutkan!")
             except Exception:
                 pass
         except Exception as e:

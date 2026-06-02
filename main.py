@@ -5,8 +5,8 @@ from telebot import types
 from datetime import datetime
 
 # Import modul
-import modul_magang
-import modul_jaringan
+from modul.magang import main as magang
+from modul.jaringan import main as jaringan
 
 # --- PATCH FORCE IPV4 ---
 def allowed_gai_family():
@@ -73,10 +73,10 @@ if __name__ == '__main__':
     setup_bot_commands()
 
     # Modul Magang
-    modul_magang.init_magang(bot)
+    magang.init_magang(bot)
     
     # Modul Jaringan
-    modul_jaringan.init_jaringan(bot)
+    jaringan.init_jaringan(bot)
     
     print("Telegram bot siap dan berjalan!")
     bot.infinity_polling()

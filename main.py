@@ -3,10 +3,12 @@ import socket
 import urllib3.util.connection as urllib3_cn
 from telebot import types
 from datetime import datetime
+import threading
 
 # Import modul
 from modul.magang import main as magang
 from modul.jaringan import main as jaringan
+from modul.reminder import main as reminder
 
 # --- PATCH FORCE IPV4 ---
 def allowed_gai_family():
@@ -72,11 +74,15 @@ if __name__ == '__main__':
     
     setup_bot_commands()
 
-    # Modul Magang
+    # Inisialisasi Handler Modul
     magang.init_magang(bot)
-    
-    # Modul Jaringan
     jaringan.init_jaringan(bot)
+    reminder.init_reminder(bot)
+    
+    print("Memulai background scheduler untuk reminder...")
+    thread_scheduler = threading.Thread(target=reminder.jalankan_scheduler, args=(bot,))
+    thread_scheduler.daemon = True
+    thread_scheduler.start()      
     
     print("Telegram bot siap dan berjalan!")
     bot.infinity_polling()

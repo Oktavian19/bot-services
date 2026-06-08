@@ -3,7 +3,10 @@ import time
 from datetime import datetime
 import pytz
 from telebot import types
-from .database import setup_database, insert_reminder, get_due_reminders, mark_reminder_completed
+from .database import (
+    setup_database, insert_reminder, get_due_reminders, mark_reminder_completed,
+    get_active_reminders_by_chat, delete_reminder, update_reminder_field
+)
 
 # Set the timezone
 LOCAL_TZ = pytz.timezone('Asia/Jakarta')
@@ -27,6 +30,76 @@ def init_reminder(bot):
         msg = bot.send_message(chat_id, "Siap! Pengingat untuk acara apa? (Kirimkan pesan utamanya)")
         # Register the next function to capture the user's reply
         bot.register_next_step_handler(msg, ask_date, bot)
+
+    @bot.message_handler(commands=['edit_reminder'])
+    def show_edit_menu(message):
+        chat_id = message.chat.id
+        reminders = get_active_reminders_by_chat(chat_id)
+        
+        if not reminders:
+            bot.send_message(chat_id, "ℹ️ Anda tidak memiliki pengingat yang aktif saat ini.")
+            return
+            
+        markup = types.InlineKeyboardMarkup(row_width=1)
+        for r in reminders:
+            r_id, r_msg, r_date, r_time, r_prep = r
+            # Potong pesan jika terlalu panjang untuk tombol
+            short_msg = r_msg[:20] + "..." if len(r_msg) > 20 else r_msg
+            button_text = f"[{r_date}] {short_msg}"
+            markup.add(types.InlineKeyboardButton(button_text, callback_data=f"rmd_sel_{r_id}"))
+            
+        bot.send_message(chat_id, "Pilih pengingat yang ingin Anda kelola:", reply_markup=markup)
+
+    @bot.callback_query_handler(func=lambda call: call.data.startswith('rmd_'))
+    def handle_reminder_callback(call):
+        chat_id = call.message.chat.id
+        action = call.data[:7] 
+        
+        if len(call.data) <= 8:
+            return
+
+        reminder_id = int(call.data[8:]) 
+
+        if action == "rmd_sel":
+            markup = types.InlineKeyboardMarkup(row_width=2)
+            markup.add(
+                types.InlineKeyboardButton("📝 Ubah Pesan", callback_data=f"rmd_msg_{reminder_id}"),
+                types.InlineKeyboardButton("📅 Ubah Tanggal", callback_data=f"rmd_dat_{reminder_id}"),
+                types.InlineKeyboardButton("⏰ Ubah Jam", callback_data=f"rmd_tim_{reminder_id}"),
+                types.InlineKeyboardButton("⏳ Ubah H-", callback_data=f"rmd_prp_{reminder_id}")
+            )
+            markup.add(types.InlineKeyboardButton("🗑️ Hapus Pengingat", callback_data=f"rmd_del_{reminder_id}"))
+            markup.add(types.InlineKeyboardButton("❌ Batal", callback_data=f"rmd_ccl_0")) 
+            
+            bot.edit_message_text(
+                "Pilih bagian mana yang ingin diubah atau dihapus:",
+                chat_id=chat_id,
+                message_id=call.message.message_id,
+                reply_markup=markup
+            )
+            
+        elif action == "rmd_del":
+            delete_reminder(reminder_id)
+            bot.edit_message_text("🗑️ <b>Pengingat berhasil dihapus!</b>", chat_id=chat_id, message_id=call.message.message_id, parse_mode="HTML")
+            
+        elif action == "rmd_ccl":
+            bot.edit_message_text("✅ Operasi dibatalkan.", chat_id=chat_id, message_id=call.message.message_id)
+
+        elif action == "rmd_msg":
+            msg = bot.send_message(chat_id, "Kirimkan pesan baru untuk pengingat ini:")
+            bot.register_next_step_handler(msg, update_field_process, bot, reminder_id, 'message')
+            
+        elif action == "rmd_dat":
+            msg = bot.send_message(chat_id, "Kirimkan tanggal baru (Format: YYYY-MM-DD):")
+            bot.register_next_step_handler(msg, update_field_process, bot, reminder_id, 'target_date')
+            
+        elif action == "rmd_tim":
+            msg = bot.send_message(chat_id, "Kirimkan jam baru (Format: HH:MM):")
+            bot.register_next_step_handler(msg, update_field_process, bot, reminder_id, 'notify_time')
+            
+        elif action == "rmd_prp":
+            msg = bot.send_message(chat_id, "Berapa hari sebelumnya bot harus mengingatkan? (Ketik angka saja):")
+            bot.register_next_step_handler(msg, update_field_process, bot, reminder_id, 'prep_days')
 
 def ask_date(message, bot):
     """Stores the message and asks for the target date."""
@@ -134,6 +207,38 @@ def save_reminder(message, bot):
     except ValueError:
         msg = bot.send_message(chat_id, "⚠️ Format waktu salah. Gunakan format HH:MM (contoh: 07:00):")
         bot.register_next_step_handler(msg, save_reminder, bot)
+
+def update_field_process(message, bot, reminder_id, field):
+    """Handles the user input for updating a specific field, including validation."""
+    chat_id = message.chat.id
+    new_val = message.text
+
+    if new_val.startswith('/'):
+        bot.send_message(chat_id, "❌ Perubahan dibatalkan.")
+        return
+
+    try:
+        # Validation rules based on the field being edited
+        if field == 'target_date':
+            datetime.strptime(new_val, "%Y-%m-%d")
+        elif field == 'notify_time':
+            datetime.strptime(new_val, "%H:%M")
+        elif field == 'prep_days':
+            if not new_val.isdigit():
+                raise ValueError("Bukan angka")
+            new_val = int(new_val) # Convert to integer for DB
+
+        # Update the database if validation passes
+        update_reminder_field(reminder_id, field, new_val)
+        bot.send_message(chat_id, "✅ <b>Pengingat berhasil diperbarui!</b>", parse_mode="HTML")
+        
+    except ValueError:
+        if field == 'target_date':
+            bot.send_message(chat_id, "⚠️ Format tanggal salah. Pembaruan dibatalkan. Silakan ulangi /edit_reminder.")
+        elif field == 'notify_time':
+            bot.send_message(chat_id, "⚠️ Format jam salah. Pembaruan dibatalkan. Silakan ulangi /edit_reminder.")
+        elif field == 'prep_days':
+            bot.send_message(chat_id, "⚠️ Harap masukkan angka saja. Pembaruan dibatalkan. Silakan ulangi /edit_reminder.")
 
 # ----------------- BACKGROUND SCHEDULER LOGIC -----------------
 

@@ -58,3 +58,32 @@ def mark_reminder_completed(reminder_id):
     ''', (reminder_id,))
     conn.commit()
     conn.close()
+
+def get_active_reminders_by_chat(chat_id):
+    """Fetch all active reminders for a specific user."""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute('''
+        SELECT id, message, target_date, notify_time, prep_days 
+        FROM reminders 
+        WHERE chat_id = ? AND status = 'active'
+    ''', (chat_id,))
+    reminders = cursor.fetchall()
+    conn.close()
+    return reminders
+
+def delete_reminder(reminder_id):
+    """Delete a reminder from the database."""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute('DELETE FROM reminders WHERE id = ?', (reminder_id,))
+    conn.commit()
+    conn.close()
+
+def update_reminder_field(reminder_id, field, value):
+    """Update a specific field of a reminder."""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute(f"UPDATE reminders SET {field} = ? WHERE id = ?", (value, reminder_id))
+    conn.commit()
+    conn.close()

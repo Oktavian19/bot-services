@@ -17,18 +17,38 @@ user_data_store = {}
 def init_reminder(bot):
     """
     Initializes the reminder module by creating the database table 
-    and registering the /add_reminder command.
+    and registering commands.
     """
     setup_database()
     print("[+] Module Reminder: Database ready.")
 
+    @bot.message_handler(commands=['reminder'])
+    def show_reminder_hub(message):
+        chat_id = message.chat.id
+        reminders = get_active_reminders_by_chat(chat_id)
+        
+        text = "📅 <b>Daftar Pengingat Aktif Anda:</b>\n\n"
+        if not reminders:
+            text += "<i>Anda belum memiliki pengingat yang aktif saat ini.</i>"
+        else:
+            for idx, r in enumerate(reminders, 1):
+                r_id, r_msg, r_date, r_time, r_prep = r
+                text += f"{idx}. <b>{r_msg}</b>\n   🗓 Hari-H: <code>{r_date}</code> ({r_time} WIB) | ⏳ H-{r_prep}\n\n"
+        
+        # Create Inline Buttons for Hub
+        markup = types.InlineKeyboardMarkup(row_width=2)
+        btn_add = types.InlineKeyboardButton("➕ Tambah Pengingat", callback_data="rmd_hub_add")
+        btn_edit = types.InlineKeyboardButton("📝 Edit Pengingat", callback_data="rmd_hub_edit")
+        markup.add(btn_add, btn_edit)
+        
+        bot.send_message(chat_id, text, parse_mode="HTML", reply_markup=markup)
+
+    # Keep old command as shortcut if needed, or you can delete it
     @bot.message_handler(commands=['add_reminder'])
     def start_reminder(message):
         chat_id = message.chat.id
-        user_data_store[chat_id] = {} # Initialize empty dict for this user
-        
+        user_data_store[chat_id] = {}
         msg = bot.send_message(chat_id, "Siap! Pengingat untuk acara apa? (Kirimkan pesan utamanya)")
-        # Register the next function to capture the user's reply
         bot.register_next_step_handler(msg, ask_date, bot)
 
     @bot.message_handler(commands=['edit_reminder'])
@@ -43,7 +63,6 @@ def init_reminder(bot):
         markup = types.InlineKeyboardMarkup(row_width=1)
         for r in reminders:
             r_id, r_msg, r_date, r_time, r_prep = r
-            # Potong pesan jika terlalu panjang untuk tombol
             short_msg = r_msg[:20] + "..." if len(r_msg) > 20 else r_msg
             button_text = f"[{r_date}] {short_msg}"
             markup.add(types.InlineKeyboardButton(button_text, callback_data=f"rmd_sel_{r_id}"))
@@ -53,11 +72,23 @@ def init_reminder(bot):
     @bot.callback_query_handler(func=lambda call: call.data.startswith('rmd_'))
     def handle_reminder_callback(call):
         chat_id = call.message.chat.id
-        action = call.data[:7] 
+        bot.answer_callback_query(call.id) # Answer immediately to avoid loading icon
         
+        if call.data == "rmd_hub_add":
+            user_data_store[chat_id] = {}
+            msg = bot.send_message(chat_id, "Siap! Pengingat untuk acara apa? (Kirimkan pesan utamanya)")
+            bot.register_next_step_handler(msg, ask_date, bot)
+            return
+            
+        elif call.data == "rmd_hub_edit":
+            # Call the existing edit list directly using call.message
+            show_edit_menu(call.message)
+            return
+
         if len(call.data) <= 8:
             return
 
+        action = call.data[:7]  # e.g., 'rmd_sel', 'rmd_del'
         reminder_id = int(call.data[8:]) 
 
         if action == "rmd_sel":
@@ -69,7 +100,7 @@ def init_reminder(bot):
                 types.InlineKeyboardButton("⏳ Ubah H-", callback_data=f"rmd_prp_{reminder_id}")
             )
             markup.add(types.InlineKeyboardButton("🗑️ Hapus Pengingat", callback_data=f"rmd_del_{reminder_id}"))
-            markup.add(types.InlineKeyboardButton("❌ Batal", callback_data=f"rmd_ccl_0")) 
+            markup.add(types.InlineKeyboardButton("❌ Batal", callback_data=f"rmd_ccl_0"))
             
             bot.edit_message_text(
                 "Pilih bagian mana yang ingin diubah atau dihapus:",

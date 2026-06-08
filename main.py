@@ -23,6 +23,7 @@ bot = telebot.TeleBot(TELEGRAM_TOKEN)
 def setup_bot_commands():
     commands = [
         types.BotCommand("menu", "Tampilkan menu utama"),
+        types.BotCommand("reminder", "Manajemen agenda & pengingat (Hub)"),
         types.BotCommand("start", "Mulai pendaftaran akun magang"),
         types.BotCommand("stop", "Hentikan pemantauan magang"),
         types.BotCommand("check", "Cek status magang manual sekarang"),

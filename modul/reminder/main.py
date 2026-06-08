@@ -244,7 +244,7 @@ def update_field_process(message, bot, reminder_id, field):
     chat_id = message.chat.id
     new_val = message.text
 
-    if not new_val.text or new_val.startswith('/'):
+    if new_val.startswith('/'):
         bot.send_message(chat_id, "❌ Perubahan dibatalkan.")
         return
 

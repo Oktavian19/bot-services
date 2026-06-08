@@ -137,7 +137,7 @@ def ask_date(message, bot):
     chat_id = message.chat.id
     
     # Check if user cancels
-    if not message.text or message.text.startswith('/'):
+    if message.text.startswith('/'):
         bot.send_message(chat_id, "Pembuatan pengingat dibatalkan (Atau input tidak valid).")
         user_data_store.pop(chat_id, None)
         return
@@ -155,7 +155,7 @@ def ask_prep_days(message, bot):
     chat_id = message.chat.id
     date_text = message.text
 
-    if not date_text.text or date_text.startswith('/'):
+    if date_text.startswith('/'):
         bot.send_message(chat_id, "Pembuatan pengingat dibatalkan (Atau input tidak valid).")
         user_data_store.pop(chat_id, None)
         return
@@ -179,7 +179,7 @@ def ask_time(message, bot):
     chat_id = message.chat.id
     prep_text = message.text
 
-    if not prep_text.text or prep_text.startswith('/'):
+    if prep_text.startswith('/'):
         bot.send_message(chat_id, "Pembuatan pengingat dibatalkan (Atau input tidak valid).")
         user_data_store.pop(chat_id, None)
         return
@@ -202,7 +202,7 @@ def save_reminder(message, bot):
     chat_id = message.chat.id
     time_text = message.text
 
-    if not time_text.text or time_text.startswith('/'):
+    if time_text.startswith('/'):
         bot.send_message(chat_id, "Pembuatan pengingat dibatalkan (Atau input tidak valid).")
         user_data_store.pop(chat_id, None)
         return

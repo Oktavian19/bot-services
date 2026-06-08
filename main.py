@@ -52,7 +52,7 @@ def send_menu_utama(message):
                      parse_mode="HTML", reply_markup=markup)
 
 # --- HANDLER KLIK TOMBOL ---
-@bot.callback_query_handler(func=lambda call: True)
+@bot.callback_query_handler(func=lambda call: call.data.startswith('cb_'))
 def callback_listener(call):
     bot.answer_callback_query(call.id)
     

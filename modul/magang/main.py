@@ -19,7 +19,7 @@ user_events = {}
 manual_checks = {}      
 
 # Masukkan Secret Key Anda di sini
-SECRET_KEY = b'DWRTbF6-QoW9dcV_3yQVxctLtJXFOPcUJ7mveMW76jA='
+SECRET_KEY = os.environ.get('MAGANG_SECRET_KEY')
 cipher_suite = Fernet(SECRET_KEY)
 
 def encrypt_pass(plain_text):

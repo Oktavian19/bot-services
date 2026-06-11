@@ -16,7 +16,7 @@ def allowed_gai_family():
 urllib3_cn.allowed_gai_family = allowed_gai_family
 
 # --- CONFIGURATION ---
-TELEGRAM_TOKEN = '8794413205:AAHqoki60gONMQqzFLQV290j_iyu8O0Ef-M'
+TELEGRAM_TOKEN = os.environ.get('TELEGRAM_TOKEN')
 bot = telebot.TeleBot(TELEGRAM_TOKEN)
 
 # --- SETUP MENU COMMAND ---

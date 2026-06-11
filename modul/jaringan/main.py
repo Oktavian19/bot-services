@@ -1,10 +1,11 @@
+import os
 import time
 from datetime import datetime
 import socket
 import threading
 import subprocess
 
-CHAT_ID = '1186041989'
+CHAT_ID = os.environ.get('ADMIN_CHAT_ID')
 
 def check_connection():
     try:

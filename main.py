@@ -1,3 +1,4 @@
+import os
 import telebot
 import socket
 import urllib3.util.connection as urllib3_cn
@@ -22,31 +23,26 @@ bot = telebot.TeleBot(TELEGRAM_TOKEN)
 # --- SETUP MENU COMMAND ---
 def setup_bot_commands():
     commands = [
-        types.BotCommand("menu", "Tampilkan menu utama"),
-        types.BotCommand("reminder", "Manajemen agenda & pengingat (Hub)"),
-        types.BotCommand("start", "Mulai pendaftaran akun magang"),
-        types.BotCommand("stop", "Hentikan pemantauan magang"),
-        types.BotCommand("check", "Cek status magang manual sekarang"),
-        types.BotCommand("active", "Lihat akun magang yang sedang dipantau"),
-        types.BotCommand("add_reminder", "Tambahkan pengingat"),
+        types.BotCommand("start", "Tampilkan menu utama"),
+        types.BotCommand("magang", "Pusat kendali pemantauan magang"),
+        types.BotCommand("reminder", "Manajemen agenda & pengingat"),
         types.BotCommand("ping", "Cek status koneksi server"),
-        types.BotCommand("speedtest", "Uji kecepatan internet server (Admin)")
     ]
     bot.set_my_commands(commands)
     print("[+] Menu rekomendasi command berhasil diterapkan!")
 
 # --- PERINTAH MENU DENGAN TOMBOL INLINE ---
-@bot.message_handler(commands=['menu'])
+@bot.message_handler(commands=['start'])
 def send_menu_utama(message):
     
     markup = types.InlineKeyboardMarkup(row_width=2) 
     
     tombol_ping = types.InlineKeyboardButton("🏓 Ping Server", callback_data="cb_ping")
-    tombol_status = types.InlineKeyboardButton("🔍 Cek Magang", callback_data="cb_check")
-    tombol_active = types.InlineKeyboardButton("👥 User Aktif", callback_data="cb_active")
+    tombol_magang = types.InlineKeyboardButton("🎓 Pusat Magang", callback_data="cb_magang")
+    tombol_reminder = types.InlineKeyboardButton("🔔 Pengingat", callback_data="cb_reminder")
     tombol_speed = types.InlineKeyboardButton("🚀 Speedtest", callback_data="cb_speedtest")
     
-    markup.add(tombol_ping, tombol_status, tombol_active, tombol_speed)
+    markup.add(tombol_ping, tombol_magang, tombol_reminder, tombol_speed)
     
     bot.send_message(message.chat.id, "🎛 <b>Pusat Kendali Server</b>\nSilakan pilih salah satu menu di bawah ini:", 
                      parse_mode="HTML", reply_markup=markup)
@@ -58,14 +54,19 @@ def callback_listener(call):
     
     if call.data == "cb_ping":
         waktu = datetime.now().strftime('%H:%M:%S')
-        bot.send_message(call.message.chat.id, f"🏓 <b>Pong!</b> (via Tombol)\n⏱ <code>{waktu}</code>", parse_mode="HTML")
+        balasan = (
+            f"🏓 <b>Pong!</b>\n\n"
+            f"Server Debian dalam kondisi <b>ONLINE</b> dan terhubung ke jaringan.\n"
+            f"⏱ <code>{waktu}</code>"
+        )
+        bot.send_message(call.message.chat.id, balasan, parse_mode="HTML")
         
-    elif call.data == "cb_check":
-        call.message.text = "/check"
+    elif call.data == "cb_magang":
+        call.message.text = "/magang"
         bot.process_new_messages([call.message])
         
-    elif call.data == "cb_active":
-        call.message.text = "/active"
+    elif call.data == "cb_reminder":
+        call.message.text = "/reminder"
         bot.process_new_messages([call.message])
         
     elif call.data == "cb_speedtest":

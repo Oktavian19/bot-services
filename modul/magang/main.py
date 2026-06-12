@@ -3,6 +3,7 @@ from bs4 import BeautifulSoup
 from datetime import datetime
 import random
 import threading
+from telebot import types
 from .database import (
     decrypt_pass, init_db, add_user_db, remove_user_db, update_status_db, get_all_users_db
 )
@@ -95,26 +96,93 @@ def pantau_magang(bot, chat_id, username, plain_password, initial_status=None):
 
 # --- TELEGRAM ROUTES REGISTRATION ---
 def register_handlers(bot):
-    @bot.message_handler(commands=['start'])
-    def send_welcome(message):
-        bot.reply_to(message, "Halo! Kirim Username Anda untuk memulai pemantauan status magang:")
-        bot.register_next_step_handler(message, process_username_step, bot)
+    
+    # Hub Magang Utama
+    @bot.message_handler(commands=['magang'])
+    def show_magang_hub(message):
+        chat_id = message.chat.id
+        
+        markup = types.InlineKeyboardMarkup(row_width=2)
+        btn_pantau = types.InlineKeyboardButton("▶️ Mulai Pantau", callback_data="mgg_pantau")
+        btn_stop = types.InlineKeyboardButton("⏹️ Stop Pantau", callback_data="mgg_stop")
+        btn_check = types.InlineKeyboardButton("🔄 Cek Sekarang", callback_data="mgg_check")
+        btn_active = types.InlineKeyboardButton("👥 User Aktif", callback_data="mgg_active")
+        
+        markup.add(btn_pantau, btn_stop, btn_check, btn_active)
+        
+        status_teks = "🟢 Aktif" if chat_id in active_users else "🔴 Berhenti"
+        user_info = f" (<b>{active_users[chat_id]}</b>)" if chat_id in active_users else ""
+        
+        pesan = (
+            f"🎓 <b>Pusat Kendali Magang JTI</b>\n"
+            f"Status Pemantauan Anda: {status_teks}{user_info}\n\n"
+            f"Silakan pilih aksi di bawah ini:"
+        )
+        bot.send_message(chat_id, pesan, parse_mode="HTML", reply_markup=markup)
+
+    @bot.callback_query_handler(func=lambda call: call.data.startswith('mgg_'))
+    def handle_magang_callback(call):
+        chat_id = call.message.chat.id
+        bot.answer_callback_query(call.id)
+        action = call.data
+        
+        if action == "mgg_pantau":
+            if chat_id in active_users:
+                bot.send_message(chat_id, f"⚠️ Pemantauan untuk <b>{active_users[chat_id]}</b> sudah berjalan! Hentikan terlebih dahulu.", parse_mode="HTML")
+            else:
+                msg = bot.send_message(chat_id, "Halo! Kirim Username portal Anda untuk memulai pemantauan status magang:")
+                bot.register_next_step_handler(msg, process_username_step, bot)
+                
+        elif action == "mgg_stop":
+            if chat_id in active_users:
+                user_stopped = active_users.pop(chat_id)
+                manual_checks.pop(chat_id, None)
+                remove_user_db(chat_id)
+                event = user_events.pop(chat_id, None)
+                if event: event.set()
+                bot.send_message(chat_id, f"⏹️ Pemantauan untuk <b>{user_stopped}</b> berhasil dihentikan.", parse_mode="HTML")
+            else:
+                bot.send_message(chat_id, "ℹ️ Tidak ada pemantauan yang sedang berjalan untuk akun Anda.")
+                
+        elif action == "mgg_check":
+            if chat_id in active_users:
+                bot.send_message(chat_id, "🔄 Meminta pembaruan status ke server portal JTI... (mohon tunggu)")
+                manual_checks[chat_id] = True
+                event = user_events.get(chat_id)
+                if event: event.set()
+            else:
+                bot.send_message(chat_id, "ℹ️ Tidak ada pemantauan yang sedang berjalan. Klik Mulai Pantau terlebih dahulu.")
+                
+        elif action == "mgg_active":
+            if active_users:
+                users = "\n".join([f"- {user}" for user in active_users.values()])
+                bot.send_message(chat_id, f"👥 <b>Daftar Akun Sedang Dipantau:</b>\n{users}", parse_mode="HTML")
+            else:
+                bot.send_message(chat_id, "ℹ️ Saat ini tidak ada proses pemantauan magang yang berjalan di server.")
 
     def process_username_step(message, bot):
         chat_id = message.chat.id
-        username = message.text.strip()
-        if chat_id in active_users:
-            bot.send_message(chat_id, f"Pemantauan untuk {active_users[chat_id]} sudah berjalan! Ketik /stop terlebih dahulu.")
+        
+        if not message.text or message.text.startswith('/'):
+            bot.send_message(chat_id, "❌ Operasi pendaftaran pemantauan dibatalkan.")
             return
-        bot.send_message(chat_id, "Kirim Password Anda:")
-        bot.register_next_step_handler(message, process_password_step, bot, username)
+            
+        username = message.text.strip()
+        msg = bot.send_message(chat_id, "Kirim Password Anda:")
+        bot.register_next_step_handler(msg, process_password_step, bot, username)
 
     def process_password_step(message, bot, username):
         chat_id = message.chat.id
+        
+        # Validasi keamanan
+        if not message.text or message.text.startswith('/'):
+            bot.send_message(chat_id, "❌ Operasi pendaftaran pemantauan dibatalkan.")
+            return
+            
         plain_password = message.text.strip()
         try:
             bot.delete_message(chat_id, message.message_id)
-            bot.send_message(chat_id, "(Pesan password Anda telah dihapus otomatis demi keamanan)")
+            bot.send_message(chat_id, "(Pesan password Anda telah dihapus otomatis demi keamanan 🔒)")
         except Exception:
             pass 
         
@@ -123,42 +191,10 @@ def register_handlers(bot):
         manual_checks[chat_id] = False
         add_user_db(chat_id, username, plain_password)
         
-        bot.send_message(chat_id, f"Memulai otomasi pemantauan status magang untuk Username: {username}...")
+        bot.send_message(chat_id, f"▶️ Memulai otomasi pemantauan status magang untuk Username: <b>{username}</b>...", parse_mode="HTML")
         t = threading.Thread(target=pantau_magang, args=(bot, chat_id, username, plain_password))
         t.daemon = True 
         t.start()
-
-    @bot.message_handler(commands=['stop'])
-    def stop_pantau(message):
-        chat_id = message.chat.id
-        if chat_id in active_users:
-            user_stopped = active_users.pop(chat_id)
-            manual_checks.pop(chat_id, None)
-            remove_user_db(chat_id)
-            event = user_events.pop(chat_id, None)
-            if event: event.set()
-            bot.reply_to(message, f"Pemantauan untuk {user_stopped} langsung dihentikan.")
-        else:
-            bot.reply_to(message, "Tidak ada pemantauan yang sedang berjalan.")
-
-    @bot.message_handler(commands=['check'])
-    def cek_pantau(message):
-        chat_id = message.chat.id
-        if chat_id in active_users:
-            bot.reply_to(message, "Meminta pembaruan status ke server... (mohon tunggu)")
-            manual_checks[chat_id] = True
-            event = user_events.get(chat_id)
-            if event: event.set()
-        else:
-            bot.reply_to(message, "Tidak ada pemantauan yang sedang berjalan.")
-
-    @bot.message_handler(commands=['active'])
-    def cek_active(message):
-        if active_users:
-            users = "\n".join([f"- {user}" for user in active_users.values()])
-            bot.reply_to(message, f"Daftar akun yang sedang dipantau saat ini:\n{users}")
-        else:
-            bot.reply_to(message, "Saat ini tidak ada proses pemantauan yang berjalan.")
 
 # --- INITIALIZATION ---
 def init_magang(bot):

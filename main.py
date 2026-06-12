@@ -10,6 +10,7 @@ import threading
 from modul.magang import main as magang
 from modul.jaringan import main as jaringan
 from modul.reminder import main as reminder
+from modul.bensin import main as bensin
 
 # --- PATCH FORCE IPV4 ---
 def allowed_gai_family():
@@ -27,6 +28,7 @@ def setup_bot_commands():
         types.BotCommand("magang", "Pusat kendali pemantauan magang"),
         types.BotCommand("reminder", "Manajemen agenda & pengingat"),
         types.BotCommand("ping", "Cek status koneksi server"),
+        types.BotCommand("bensin", "Catatan konsumsi & riwayat BBM"),
     ]
     bot.set_my_commands(commands)
     print("[+] Menu rekomendasi command berhasil diterapkan!")
@@ -41,8 +43,9 @@ def send_menu_utama(message):
     tombol_magang = types.InlineKeyboardButton("🎓 Pusat Magang", callback_data="cb_magang")
     tombol_reminder = types.InlineKeyboardButton("🔔 Pengingat", callback_data="cb_reminder")
     tombol_speed = types.InlineKeyboardButton("🚀 Speedtest", callback_data="cb_speedtest")
+    tombol_bensin = types.InlineKeyboardButton("⛽ BBM Motor", callback_data="cb_bensin")
     
-    markup.add(tombol_ping, tombol_magang, tombol_reminder, tombol_speed)
+    markup.add(tombol_ping, tombol_magang, tombol_reminder, tombol_speed, tombol_bensin)
     
     bot.send_message(message.chat.id, "🎛 <b>Pusat Kendali Server</b>\nSilakan pilih salah satu menu di bawah ini:", 
                      parse_mode="HTML", reply_markup=markup)
@@ -73,6 +76,10 @@ def callback_listener(call):
         call.message.text = "/speedtest"
         bot.process_new_messages([call.message])
 
+    elif call.data == "cb_bensin":
+        call.message.text = "/bensin"
+        bot.process_new_messages([call.message])
+
 if __name__ == '__main__':
     print("Memulai inisialisasi layanan...")
     
@@ -82,7 +89,8 @@ if __name__ == '__main__':
     magang.init_magang(bot)
     jaringan.init_jaringan(bot)
     reminder.init_reminder(bot)
-    
+    bensin.init_bensin(bot)
+
     print("Memulai background scheduler untuk reminder...")
     thread_scheduler = threading.Thread(target=reminder.jalankan_scheduler, args=(bot,))
     thread_scheduler.daemon = True

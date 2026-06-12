@@ -4,7 +4,8 @@ from cryptography.fernet import Fernet
 
 DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'users.db')
 
-SECRET_KEY = os.environ.get('MAGANG_SECRET_KEY')
+SECRET_KEY_STR = os.environ.get('MAGANG_SECRET_KEY')
+SECRET_KEY = SECRET_KEY_STR.encode() if SECRET_KEY_STR else b''
 cipher_suite = Fernet(SECRET_KEY)
 
 def encrypt_pass(plain_text):

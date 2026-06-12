@@ -3,63 +3,20 @@ from bs4 import BeautifulSoup
 from datetime import datetime
 import random
 import threading
-import sqlite3
-import os
-from cryptography.fernet import Fernet
+from .database import (
+    decrypt_pass, init_db, add_user_db, remove_user_db, update_status_db, get_all_users_db
+)
 
 LOGIN_URL = 'https://jti.polinema.ac.id/jtiportal/login'
 AUTH_URL = 'https://jti.polinema.ac.id/jtiportal/login/auth'
 DASHBOARD_URL = 'https://jti.polinema.ac.id/jtiportal/mahasiswa'
-
-DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'users.db')
 
 # State Trackers
 active_users = {}       
 user_events = {}        
 manual_checks = {}      
 
-# Masukkan Secret Key Anda di sini
-SECRET_KEY = os.environ.get('MAGANG_SECRET_KEY')
-cipher_suite = Fernet(SECRET_KEY)
-
-def encrypt_pass(plain_text):
-    return cipher_suite.encrypt(plain_text.encode()).decode()
-
-def decrypt_pass(cipher_text):
-    return cipher_suite.decrypt(cipher_text.encode()).decode()
-
-# --- DATABASE OPERATIONS ---
-def init_db():
-    with sqlite3.connect(DB_FILE) as conn:
-        conn.execute('''CREATE TABLE IF NOT EXISTS users (
-            chat_id INTEGER PRIMARY KEY,
-            username TEXT,
-            password TEXT,
-            last_status TEXT
-        )''')
-
-def add_user_db(chat_id, username, plain_password):
-    enc_password = encrypt_pass(plain_password)
-    with sqlite3.connect(DB_FILE) as conn:
-        conn.execute('INSERT OR REPLACE INTO users (chat_id, username, password, last_status) VALUES (?, ?, ?, ?)',
-                     (chat_id, username, enc_password, None))
-
-def remove_user_db(chat_id):
-    with sqlite3.connect(DB_FILE) as conn:
-        conn.execute('DELETE FROM users WHERE chat_id = ?', (chat_id,))
-
-def update_status_db(chat_id, status):
-    with sqlite3.connect(DB_FILE) as conn:
-        conn.execute('UPDATE users SET last_status = ? WHERE chat_id = ?', (status, chat_id))
-
-def get_all_users_db():
-    with sqlite3.connect(DB_FILE) as conn:
-        cur = conn.cursor()
-        cur.execute('SELECT chat_id, username, password, last_status FROM users')
-        return cur.fetchall()
-
 # --- MONITORING THREAD ---
-# Perhatikan kita menambahkan parameter 'bot' di sini
 def pantau_magang(bot, chat_id, username, plain_password, initial_status=None):
     last_status = initial_status
     
@@ -225,9 +182,5 @@ def init_magang(bot):
             t.daemon = True
             t.start()
             
-            try:
-                print("🔄 Server baru saja di-restart. Pemantauan dilanjutkan!")
-            except Exception:
-                pass
         except Exception as e:
             print(f"Gagal meresume {username}: {e}")

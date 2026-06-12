@@ -24,17 +24,17 @@ def init_bensin(bot):
             stats = get_statistik_bensin(chat_id)
             if stats['rata_rata'] > 0:
                 teks_kml = (
-                    f"📊 <b>Rata-rata Keseluruhan:</b> {stats['rata_rata']} km/L\n"
-                    f"📈 <b>Konsumsi Terakhir:</b> {stats['terakhir']} km/L\n\n"
+                    f"📊 <b>Rata-rata Keseluruhan:</b> {stats['rata_rata']:.2f} km/L\n"
+                    f"📈 <b>Konsumsi Terakhir:</b> {stats['terakhir']:.2f} km/L\n\n"
                 )
             else:
                 teks_kml = "📊 <b>Data Konsumsi:</b> Belum ada riwayat pengisian bensin.\n\n"
             
             text = (
                 f"🏍 <b>Manajemen Bensin: {nama_motor}</b>\n\n"
-                f"📟 <b>Odometer Awal:</b> {odo_awal} km\n"
-                f"📟 <b>Odometer Terakhir:</b> {odo_akhir} km\n"
-                f"🛣 <b>Total Terpantau:</b> {total_jarak} km\n\n"
+                f"📟 <b>Odometer Awal:</b> {odo_awal:.1f} km\n"
+                f"📟 <b>Odometer Terakhir:</b> {odo_akhir:.1f} km\n"
+                f"🛣 <b>Total Terpantau:</b> {total_jarak:.1f} km\n\n"
                 f"{teks_kml}"
                 f"Silakan pilih menu di bawah ini:"
             )
@@ -73,34 +73,36 @@ def init_bensin(bot):
         
     def save_motor(message, bot):
         chat_id = message.chat.id
-        if not message.text or not message.text.isdigit():
-            bot.send_message(chat_id, "⚠️ Harus berupa angka murni. Pendaftaran dibatalkan.")
+        if not message.text or message.text.startswith('/'):
+            bot.send_message(chat_id, "❌ Pendaftaran dibatalkan.")
             return
             
-        nama_motor = user_bensin_state[chat_id]['nama_motor']
-        odo_awal = int(message.text)
-        
-        register_motor(chat_id, nama_motor, odo_awal)
-        user_bensin_state.pop(chat_id, None)
-        
-        bot.send_message(chat_id, f"✅ <b>Motor {nama_motor} berhasil didaftarkan!</b>\nOdometer awal ditetapkan pada {odo_awal} km.\n\nKetik /bensin saat Anda berada di SPBU.", parse_mode="HTML")
+        try:
+            nama_motor = user_bensin_state[chat_id]['nama_motor']
+            odo_awal = float(message.text.replace(",", "."))
+            
+            register_motor(chat_id, nama_motor, odo_awal)
+            user_bensin_state.pop(chat_id, None)
+            
+            bot.send_message(chat_id, f"✅ <b>Motor {nama_motor} berhasil didaftarkan!</b>\nOdometer awal ditetapkan pada {odo_awal:.1f} km.\n\nKetik /bensin saat Anda berada di SPBU.", parse_mode="HTML")
+        except ValueError:
+            bot.send_message(chat_id, "⚠️ Odometer harus berupa angka (contoh: 45000.5). Pendaftaran dibatalkan.")
 
     # --- FLOW PENGISIAN BENSIN ---
     def ask_rupiah_bensin(message, bot):
         chat_id = message.chat.id
-        if not message.text:
+        if not message.text or message.text.startswith('/'):
             bot.send_message(chat_id, "❌ Dibatalkan.")
             return
             
-        odo_bersih = message.text.replace(".", "").replace(",", "")
-        if not odo_bersih.isdigit():
-            bot.send_message(chat_id, "⚠️ Odometer harus angka. Dibatalkan.")
-            return
+        try:
+            odo_sekarang = float(message.text.replace(",", "."))
+            user_bensin_state[chat_id]['odo_sekarang'] = odo_sekarang
             
-        user_bensin_state[chat_id]['odo_sekarang'] = int(odo_bersih)
-        
-        msg = bot.send_message(chat_id, "Berapa nominal Rupiah bensin yang Anda beli? (Hanya angka, misal: 25000)")
-        bot.register_next_step_handler(msg, ask_harga_per_liter, bot)
+            msg = bot.send_message(chat_id, "Berapa nominal Rupiah bensin yang Anda beli? (Hanya angka tanpa titik, misal: 25000)")
+            bot.register_next_step_handler(msg, ask_harga_per_liter, bot)
+        except ValueError:
+            bot.send_message(chat_id, "⚠️ Odometer harus angka desimal/bulat (contoh: 45000.5). Dibatalkan.")
         
     def ask_harga_per_liter(message, bot):
         chat_id = message.chat.id
@@ -132,7 +134,6 @@ def init_bensin(bot):
             rupiah = user_bensin_state[chat_id]['rupiah']
             harga_per_liter = int(harga_bersih)
             
-            # Hitung jumlah liter secara otomatis
             liter = rupiah / harga_per_liter
             
             # Simpan ke Database
@@ -142,9 +143,9 @@ def init_bensin(bot):
                 pesan = (
                     f"⛽ <b>Pengisian Bensin Tersimpan!</b>\n\n"
                     f"💰 Biaya: Rp{rupiah:,}\n"
-                    f"💧 Volume: {hasil['liter']} Liter\n"
-                    f"🛣 Jarak Sejak Terakhir: {hasil['jarak']} km\n"
-                    f"📊 <b>Rata-rata Konsumsi: {hasil['kml']} km/L</b>"
+                    f"💧 Volume: {hasil['liter']:.2f} Liter\n"
+                    f"🛣 Jarak Sejak Terakhir: {hasil['jarak']:.1f} km\n"
+                    f"📊 <b>Rata-rata Konsumsi: {hasil['kml']:.2f} km/L</b>"
                 )
                 bot.send_message(chat_id, pesan, parse_mode="HTML")
             else:

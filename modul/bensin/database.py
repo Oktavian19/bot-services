@@ -90,7 +90,7 @@ def get_statistik_bensin(chat_id):
         SELECT SUM(jarak_tempuh), SUM(liter) 
         FROM log_bensin 
         WHERE chat_id = ?
-    ''')
+    ''', (chat_id,))
     row_sum = cursor.fetchone()
     
     cursor.execute('''
@@ -98,7 +98,7 @@ def get_statistik_bensin(chat_id):
         FROM log_bensin 
         WHERE chat_id = ? 
         ORDER BY id DESC LIMIT 1
-    ''')
+    ''', (chat_id,))
     row_last = cursor.fetchone()
     
     conn.close()

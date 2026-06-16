@@ -34,7 +34,8 @@ def init_reminder(bot):
         else:
             for idx, r in enumerate(reminders, 1):
                 r_id, r_msg, r_date, r_time, r_prep = r
-                text += f"{idx}. <b>{r_msg}</b>\n   🗓 Hari-H: <code>{r_date}</code> ({r_time} WIB) | ⏳ H-{r_prep}\n\n"
+                tampilan_tanggal = datetime.strptime(r_date, "%Y-%m-%d").strftime("%d-%m-%Y")
+                text += f"{idx}. <b>{r_msg}</b>\n   🗓 Hari-H: <code>{tampilan_tanggal}</code> ({r_time} WIB) | ⏳ H-{r_prep}\n\n"
         
         # Create Inline Buttons for Hub
         markup = types.InlineKeyboardMarkup(row_width=2)
@@ -64,8 +65,9 @@ def init_reminder(bot):
         markup = types.InlineKeyboardMarkup(row_width=1)
         for r in reminders:
             r_id, r_msg, r_date, r_time, r_prep = r
+            tampilan_tanggal = datetime.strptime(r_date, "%Y-%m-%d").strftime("%d-%m-%Y")
             short_msg = r_msg[:20] + "..." if len(r_msg) > 20 else r_msg
-            button_text = f"[{r_date}] {short_msg}"
+            button_text = f"[{tampilan_tanggal}] {short_msg}"
             markup.add(types.InlineKeyboardButton(button_text, callback_data=f"rmd_sel_{r_id}"))
             
         bot.send_message(chat_id, "Pilih pengingat yang ingin Anda kelola:", reply_markup=markup)
@@ -123,7 +125,7 @@ def init_reminder(bot):
             bot.register_next_step_handler(msg, update_field_process, bot, reminder_id, 'message')
             
         elif action == "rmd_dat":
-            msg = bot.send_message(chat_id, "Kirimkan tanggal baru (Format: YYYY-MM-DD):")
+            msg = bot.send_message(chat_id, "Kirimkan tanggal baru (Format: DD-MM-YYYY):")
             bot.register_next_step_handler(msg, update_field_process, bot, reminder_id, 'target_date')
             
         elif action == "rmd_tim":
@@ -150,7 +152,7 @@ def ask_date(message, bot):
     
     msg = bot.send_message(
         chat_id, 
-        "Pesan dicatat. Kapan tanggal target atau hari-H nya?\n(Format: YYYY-MM-DD, contoh: 2026-06-15)"
+        "Pesan dicatat. Kapan tanggal target atau hari-H nya?\n(Format: DD-MM-YYYY, contoh: 15-06-2026)"
     )
     bot.register_next_step_handler(msg, ask_prep_days, bot)
 
@@ -167,8 +169,9 @@ def ask_prep_days(message, bot):
 
     try:
         # Validate date format
-        datetime.strptime(date_text, "%Y-%m-%d")
-        user_data_store[chat_id]['target_date'] = date_text
+        parsed_date = datetime.strptime(date_text, "%d-%m-%Y")
+        db_ready_date = parsed_date.strftime("%Y-%m-%d")
+        user_data_store[chat_id]['target_date'] = db_ready_date
         print(f"[REMINDER] User {chat_id} menetapkan target tanggal: {date_text}")
         
         msg = bot.send_message(
@@ -177,7 +180,7 @@ def ask_prep_days(message, bot):
         )
         bot.register_next_step_handler(msg, ask_time, bot)
     except ValueError:
-        msg = bot.send_message(chat_id, "⚠️ Format salah. Silakan gunakan format YYYY-MM-DD (contoh: 2026-06-15):")
+        msg = bot.send_message(chat_id, "⚠️ Format salah. Silakan gunakan format DD-MM-YYYY (contoh: 15-06-2026):")
         print(f"[REMINDER - ERROR] User {chat_id} input format tanggal salah: {date_text}")
         bot.register_next_step_handler(msg, ask_prep_days, bot) # Re-ask this step
 
@@ -234,12 +237,13 @@ def save_reminder(message, bot):
         
         # Insert to database
         insert_reminder(chat_id, msg_content, target_date, time_text, prep_days)
+        display_target_date = datetime.strptime(target_date, "%Y-%m-%d").strftime("%d-%m-%Y")
         
         bot.send_message(
             chat_id,
             f"✅ <b>Pengingat berhasil diatur!</b>\n\n"
             f"<b>Pesan:</b> '{msg_content}'\n"
-            f"<b>Waktu:</b> Setiap jam {time_text} WIB, mulai H-{prep_days} sebelum tanggal {target_date}.",
+            f"<b>Waktu:</b> Setiap jam {time_text} WIB, mulai H-{prep_days} sebelum tanggal {display_target_date}.",
             parse_mode="HTML"
         )
         
@@ -265,7 +269,8 @@ def update_field_process(message, bot, reminder_id, field):
     try:
         # Validation rules based on the field being edited
         if field == 'target_date':
-            datetime.strptime(new_val, "%Y-%m-%d")
+            parsed_date = datetime.strptime(new_val, "%d-%m-%Y")
+            new_val = parsed_date.strftime("%Y-%m-%d")
         elif field == 'notify_time':
             datetime.strptime(new_val, "%H:%M")
         elif field == 'prep_days':
@@ -281,7 +286,7 @@ def update_field_process(message, bot, reminder_id, field):
     except ValueError:
         print(f"[REMINDER - ERROR] User {chat_id} gagal mengedit '{field}', nilai tidak valid: {new_val}")
         if field == 'target_date':
-            bot.send_message(chat_id, "⚠️ Format tanggal salah. Pembaruan dibatalkan. Silakan ulangi /edit_reminder.")
+            bot.send_message(chat_id, "⚠️ Format tanggal salah. Pembaruan dibatalkan. Silakan ulangi /edit_reminder. (Gunakan format: DD-MM-YYYY)")
         elif field == 'notify_time':
             bot.send_message(chat_id, "⚠️ Format jam salah. Pembaruan dibatalkan. Silakan ulangi /edit_reminder.")
         elif field == 'prep_days':

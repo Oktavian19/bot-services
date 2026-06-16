@@ -57,6 +57,13 @@ def init_bensin(bot):
             user_bensin_state[chat_id] = {}
             msg = bot.send_message(chat_id, "Berapa angka Odometer Anda saat ini di SPBU? (Hanya angka, contoh: 45000):")
             bot.register_next_step_handler(msg, ask_rupiah_bensin, bot)
+        
+        elif action.startswith("bsn_hrg_"):
+            bot.clear_step_handler_by_chat_id(chat_id)
+            harga_pilihan = action.split("_")[2] 
+            bot.edit_message_reply_markup(chat_id=chat_id, message_id=call.message.message_id, reply_markup=None)
+            call.message.text = harga_pilihan
+            process_log_bensin(call.message, bot)
 
     # --- FLOW PENDAFTARAN MOTOR ---
     def ask_odo_awal(message, bot):
@@ -106,7 +113,8 @@ def init_bensin(bot):
         
     def ask_harga_per_liter(message, bot):
         chat_id = message.chat.id
-        if not message.text:
+        if not message.text or message.text.startswith('/'):
+            bot.send_message(chat_id, "❌ Dibatalkan.")
             return
             
         rupiah_bersih = message.text.replace(".", "").replace(",", "")
@@ -116,7 +124,18 @@ def init_bensin(bot):
             
         user_bensin_state[chat_id]['rupiah'] = int(rupiah_bersih)
         
-        msg = bot.send_message(chat_id, "Berapa Harga per Liter bensinnya?\n(Ketik <b>10000</b> jika Pertalite, atau <b>16950</b> jika Pertamax):", parse_mode="HTML")
+        markup = types.InlineKeyboardMarkup(row_width=2)
+        markup.add(
+            types.InlineKeyboardButton("🟢 Pertalite", callback_data="bsn_hrg_10000"),
+            types.InlineKeyboardButton("🔵 Pertamax", callback_data="bsn_hrg_16250")
+        )
+        
+        msg = bot.send_message(
+            chat_id, 
+            "Berapa Harga per Liter bensinnya?\n<i>(Ketik nominal manual diperbolehkan)</i>:", 
+            parse_mode="HTML",
+            reply_markup=markup
+        )
         bot.register_next_step_handler(msg, process_log_bensin, bot)
 
     def process_log_bensin(message, bot):

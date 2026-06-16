@@ -60,6 +60,7 @@ def register_handlers(bot):
     @bot.message_handler(commands=['ping'])
     def send_ping(message):
         waktu = datetime.now().strftime('%H:%M:%S')
+        print(f"[JARINGAN] User {message.chat.id} mengeksekusi perintah /ping.")
         balasan = (
             f"🏓 <b>Pong!</b>\n\n"
             f"Server Debian dalam kondisi <b>ONLINE</b> dan terhubung ke jaringan.\n"
@@ -69,7 +70,9 @@ def register_handlers(bot):
 
     @bot.message_handler(commands=['speedtest'])
     def run_speedtest(message):
+        print(f"[JARINGAN] User {message.chat.id} meminta eksekusi /speedtest.")
         if str(message.chat.id) != CHAT_ID:
+            print(f"[JARINGAN - WARNING] Akses /speedtest ditolak untuk User {message.chat.id} (Bukan Admin).")
             bot.reply_to(message, "❌ Akses ditolak. Hanya Administrator yang bisa menjalankan perintah ini.")
             return
 
@@ -82,28 +85,33 @@ def register_handlers(bot):
             
             if result.returncode == 0:
                 output_bersih = result.stdout.strip()
+                print(f"[JARINGAN] Speedtest berhasil dieksekusi. Mengirim hasil ke User {message.chat.id}.")
                 balasan_akhir = f"📊 <b>Laporan Speedtest Server:</b>\n<pre><code>{output_bersih}</code></pre>"
                 
                 bot.edit_message_text(chat_id=message.chat.id, message_id=loading_msg.message_id, 
                                       text=balasan_akhir, parse_mode="HTML")
             else:
                 error_msg = result.stderr.strip()
+                print(f"[JARINGAN - ERROR] Speedtest mengembalikan error dari sistem: {error_msg}")
                 bot.edit_message_text(chat_id=message.chat.id, message_id=loading_msg.message_id, 
                                       text=f"❌ <b>Gagal melakukan Speedtest:</b>\n<pre><code>{error_msg}</code></pre>", parse_mode="HTML")
                 
         except subprocess.TimeoutExpired:
+            print(f"[JARINGAN - TIMEOUT] Proses Speedtest dihentikan paksa (melebihi 60 detik).")
             bot.edit_message_text(chat_id=message.chat.id, message_id=loading_msg.message_id, 
                                   text="❌ Speedtest gagal karena batas waktu (Timeout > 60 detik).", parse_mode="HTML")
         except FileNotFoundError:
+             print(f"[JARINGAN - FATAL] Aplikasi CLI 'speedtest' tidak ditemukan di sistem Debian.")
              bot.edit_message_text(chat_id=message.chat.id, message_id=loading_msg.message_id, 
                                   text="❌ Paket <b>Speedtest</b> tidak ditemukan di server. Pastikan sudah terinstall.", parse_mode="HTML")
         except Exception as e:
+            print(f"[JARINGAN - FATAL] Terjadi error internal saat menjalankan speedtest: {e}")
             bot.edit_message_text(chat_id=message.chat.id, message_id=loading_msg.message_id, 
                                   text=f"❌ Terjadi error internal:\n<code>{e}</code>", parse_mode="HTML")
 
 # --- INITIALIZATION ---
 def init_jaringan(bot):
-    print("Mengaktifkan modul pemantauan jaringan...")
+    print("[+] Module Jaringan: Ready.")
     register_handlers(bot)
     t = threading.Thread(target=network_loop, args=(bot,))
     t.daemon = True

@@ -40,6 +40,7 @@ def pantau_magang(bot, chat_id, username, plain_password, initial_status=None):
 
                     if "Beranda" not in (dashboard_soup.title.text if dashboard_soup.title else ""):
                         bot.send_message(chat_id, f"❌ Login gagal untuk Username {username}!\nPemantauan dibatalkan.")
+                        print(f"[MAGANG - ERROR] Autentikasi portal gagal untuk User {chat_id} ({username}). Thread dihentikan.")
                         active_users.pop(chat_id, None)
                         user_events.pop(chat_id, None)
                         manual_checks.pop(chat_id, None)
@@ -72,6 +73,7 @@ def pantau_magang(bot, chat_id, username, plain_password, initial_status=None):
                                 update_status_db(chat_id, status_lamaran)
                                 bot.send_message(chat_id, f"✅ Pemantauan aktif!\nStatus awal di {perusahaan} adalah: {status_lamaran}")
                             elif status_lamaran != last_status:
+                                print(f"[MAGANG] Perubahan status terdeteksi untuk {username}: {last_status} -> {status_lamaran}")
                                 bot.send_message(chat_id, f"🎉 Status Magang {username} di {perusahaan} BERUBAH!\nDari: {last_status}\nMenjadi: {status_lamaran}")
                                 last_status = status_lamaran 
                                 update_status_db(chat_id, status_lamaran)
@@ -101,6 +103,7 @@ def register_handlers(bot):
     @bot.message_handler(commands=['magang'])
     def show_magang_hub(message):
         chat_id = message.chat.id
+        print(f"[MAGANG] User {chat_id} mengakses menu hub magang.")
         
         markup = types.InlineKeyboardMarkup(row_width=2)
         btn_pantau = types.InlineKeyboardButton("▶️ Mulai Pantau", callback_data="mgg_pantau")
@@ -125,6 +128,7 @@ def register_handlers(bot):
         chat_id = call.message.chat.id
         bot.answer_callback_query(call.id)
         action = call.data
+        print(f"[MAGANG] User {chat_id} memicu aksi callback: {action}")
         
         if action == "mgg_pantau":
             if chat_id in active_users:
@@ -141,6 +145,7 @@ def register_handlers(bot):
                 event = user_events.pop(chat_id, None)
                 if event: event.set()
                 bot.send_message(chat_id, f"⏹️ Pemantauan untuk <b>{user_stopped}</b> berhasil dihentikan.", parse_mode="HTML")
+                print(f"[MAGANG] Thread pemantauan dihentikan paksa oleh User {chat_id} ({user_stopped}).")
             else:
                 bot.send_message(chat_id, "ℹ️ Tidak ada pemantauan yang sedang berjalan untuk akun Anda.")
                 
@@ -168,6 +173,7 @@ def register_handlers(bot):
             return
             
         username = message.text.strip()
+        print(f"[MAGANG] User {chat_id} memulai pendaftaran dengan username: {username}")
         msg = bot.send_message(chat_id, "Kirim Password Anda:")
         bot.register_next_step_handler(msg, process_password_step, bot, username)
 
@@ -177,6 +183,7 @@ def register_handlers(bot):
         # Validasi keamanan
         if not message.text or message.text.startswith('/'):
             bot.send_message(chat_id, "❌ Operasi pendaftaran pemantauan dibatalkan.")
+            print(f"[MAGANG - WARNING] Input password dibatalkan/tidak valid untuk User {chat_id}.")
             return
             
         plain_password = message.text.strip()
@@ -195,11 +202,14 @@ def register_handlers(bot):
         t = threading.Thread(target=pantau_magang, args=(bot, chat_id, username, plain_password))
         t.daemon = True 
         t.start()
+        print(f"[MAGANG] Thread pemantauan otomatis berhasil dijalankan untuk User {chat_id} ({username}).")
 
 # --- INITIALIZATION ---
 def init_magang(bot):
     print("Membaca database pengguna aktif...")
     init_db()
+    print("[+] Module Magang: Database ready.")
+
     register_handlers(bot)
     
     users = get_all_users_db()
@@ -217,6 +227,7 @@ def init_magang(bot):
             t = threading.Thread(target=pantau_magang, args=(bot, chat_id, username, plain_password, last_status))
             t.daemon = True
             t.start()
+            print(f"[MAGANG] Berhasil meresume thread pemantauan untuk User {chat_id} ({username}).")
             
         except Exception as e:
-            print(f"Gagal meresume {username}: {e}")
+            print(f"[MAGANG - ERROR] Gagal meresume {username}: {e}")

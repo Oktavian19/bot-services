@@ -40,6 +40,7 @@ def register_motor(chat_id, nama_motor, odometer_awal):
         VALUES (?, ?, ?, ?)
     ''', (chat_id, nama_motor, odometer_awal, odometer_awal))
     conn.commit()
+    print(f"[DB-BENSIN] Data motor '{nama_motor}' (Odo: {odometer_awal}) berhasil di-commit ke SQLite untuk User {chat_id}.")
     conn.close()
 
 def get_motor(chat_id):
@@ -58,6 +59,7 @@ def add_log_bensin(chat_id, odometer_sekarang, rupiah, liter):
     row = cursor.fetchone()
     
     if not row:
+        print(f"[DB-BENSIN - WARNING] Penolakan sistem: User {chat_id} mencoba menambah log bensin tetapi belum mendaftarkan motor.")
         conn.close()
         return None
         
@@ -74,6 +76,7 @@ def add_log_bensin(chat_id, odometer_sekarang, rupiah, liter):
     cursor.execute('UPDATE motor SET odometer_terakhir = ? WHERE chat_id = ?', (odometer_sekarang, chat_id))
     
     conn.commit()
+    print(f"[DB-BENSIN] Log transaksi (Rp{rupiah}, {liter}L) & Update Odo ({odometer_sekarang}km) berhasil di-commit untuk User {chat_id}.")
     conn.close()
     
     return {

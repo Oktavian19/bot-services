@@ -25,6 +25,7 @@ def init_reminder(bot):
     @bot.message_handler(commands=['reminder'])
     def show_reminder_hub(message):
         chat_id = message.chat.id
+        print(f"[REMINDER] User {chat_id} mengakses hub pengingat.")
         reminders = get_active_reminders_by_chat(chat_id)
         
         text = "📅 <b>Daftar Pengingat Aktif Anda:</b>\n\n"
@@ -73,6 +74,7 @@ def init_reminder(bot):
     def handle_reminder_callback(call):
         chat_id = call.message.chat.id
         bot.answer_callback_query(call.id) # Answer immediately to avoid loading icon
+        print(f"[REMINDER] User {chat_id} memicu aksi tombol: {call.data}")
         
         if call.data == "rmd_hub_add":
             user_data_store[chat_id] = {}
@@ -140,9 +142,11 @@ def ask_date(message, bot):
     if message.text.startswith('/'):
         bot.send_message(chat_id, "Pembuatan pengingat dibatalkan (Atau input tidak valid).")
         user_data_store.pop(chat_id, None)
+        print(f"[REMINDER - WARNING] User {chat_id} membatalkan pembuatan pengingat.")
         return
 
     user_data_store[chat_id]['message'] = message.text
+    print(f"[REMINDER] User {chat_id} mencatat pesan utama: {message.text}")
     
     msg = bot.send_message(
         chat_id, 
@@ -158,12 +162,14 @@ def ask_prep_days(message, bot):
     if date_text.startswith('/'):
         bot.send_message(chat_id, "Pembuatan pengingat dibatalkan (Atau input tidak valid).")
         user_data_store.pop(chat_id, None)
+        print(f"[REMINDER - WARNING] User {chat_id} membatalkan di tahap tanggal.")
         return
 
     try:
         # Validate date format
         datetime.strptime(date_text, "%Y-%m-%d")
         user_data_store[chat_id]['target_date'] = date_text
+        print(f"[REMINDER] User {chat_id} menetapkan target tanggal: {date_text}")
         
         msg = bot.send_message(
             chat_id, 
@@ -172,6 +178,7 @@ def ask_prep_days(message, bot):
         bot.register_next_step_handler(msg, ask_time, bot)
     except ValueError:
         msg = bot.send_message(chat_id, "⚠️ Format salah. Silakan gunakan format YYYY-MM-DD (contoh: 2026-06-15):")
+        print(f"[REMINDER - ERROR] User {chat_id} input format tanggal salah: {date_text}")
         bot.register_next_step_handler(msg, ask_prep_days, bot) # Re-ask this step
 
 def ask_time(message, bot):
@@ -182,14 +189,17 @@ def ask_time(message, bot):
     if prep_text.startswith('/'):
         bot.send_message(chat_id, "Pembuatan pengingat dibatalkan (Atau input tidak valid).")
         user_data_store.pop(chat_id, None)
+        print(f"[REMINDER - WARNING] User {chat_id} membatalkan di tahap prep days.")
         return
 
     if not prep_text.isdigit():
         msg = bot.send_message(chat_id, "⚠️ Harap masukkan angka saja (contoh: 3):")
         bot.register_next_step_handler(msg, ask_time, bot)
+        print(f"[REMINDER - ERROR] User {chat_id} input prep days bukan angka: {prep_text}")
         return
     
     user_data_store[chat_id]['prep_days'] = int(prep_text)
+    print(f"[REMINDER] User {chat_id} menetapkan masa persiapan: H-{prep_text}")
     
     msg = bot.send_message(
         chat_id, 
@@ -205,6 +215,7 @@ def save_reminder(message, bot):
     if time_text.startswith('/'):
         bot.send_message(chat_id, "Pembuatan pengingat dibatalkan (Atau input tidak valid).")
         user_data_store.pop(chat_id, None)
+        print(f"[REMINDER - WARNING] User {chat_id} membatalkan di tahap jam notify.")
         return
 
     try:
@@ -234,9 +245,11 @@ def save_reminder(message, bot):
         
         # Clear cache session
         user_data_store.pop(chat_id, None)
+        print(f"[REMINDER] Pengingat baru berhasil diatur sepenuhnya untuk User {chat_id}. (Jam: {time_text})")
         
     except ValueError:
         msg = bot.send_message(chat_id, "⚠️ Format waktu salah. Gunakan format HH:MM (contoh: 07:00):")
+        print(f"[REMINDER - ERROR] User {chat_id} input format jam salah: {time_text}")
         bot.register_next_step_handler(msg, save_reminder, bot)
 
 def update_field_process(message, bot, reminder_id, field):
@@ -246,6 +259,7 @@ def update_field_process(message, bot, reminder_id, field):
 
     if new_val.startswith('/'):
         bot.send_message(chat_id, "❌ Perubahan dibatalkan.")
+        print(f"[REMINDER - WARNING] User {chat_id} membatalkan proses edit {field}.")
         return
 
     try:
@@ -262,8 +276,10 @@ def update_field_process(message, bot, reminder_id, field):
         # Update the database if validation passes
         update_reminder_field(reminder_id, field, new_val)
         bot.send_message(chat_id, "✅ <b>Pengingat berhasil diperbarui!</b>", parse_mode="HTML")
+        print(f"[REMINDER] User {chat_id} berhasil mengedit field '{field}' pada ID {reminder_id}.")
         
     except ValueError:
+        print(f"[REMINDER - ERROR] User {chat_id} gagal mengedit '{field}', nilai tidak valid: {new_val}")
         if field == 'target_date':
             bot.send_message(chat_id, "⚠️ Format tanggal salah. Pembaruan dibatalkan. Silakan ulangi /edit_reminder.")
         elif field == 'notify_time':
@@ -309,11 +325,12 @@ def jalankan_scheduler(bot):
                     
                     try:
                         bot.send_message(chat_id=chat_id, text=full_message, parse_mode="HTML")
+                        print(f"[REMINDER-SCHEDULER] Sukses mengirim notifikasi (H-{days_left}) ID {r_id} ke User {chat_id}.")
                     except Exception as e:
-                        logging.error(f"Failed to send reminder {r_id} to {chat_id}: {e}")
+                        print(f"[REMINDER-SCHEDULER - ERROR] Gagal mengirim reminder {r_id} ke {chat_id}: {e}")
                         
         except Exception as e:
-            logging.error(f"Error inside scheduler loop: {e}")
+            print(f"[REMINDER-SCHEDULER - FATAL] Error pada putaran scheduler: {e}")
             
         # Sleep for 60 seconds to match the clock resolution
         time.sleep(60)

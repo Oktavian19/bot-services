@@ -10,6 +10,7 @@ def init_bensin(bot):
     @bot.message_handler(commands=['bensin'])
     def show_bensin_hub(message):
         chat_id = message.chat.id
+        print(f"[BENSIN] User {chat_id} mengakses menu hub bensin.")
         motor = get_motor(chat_id)
         
         markup = types.InlineKeyboardMarkup(row_width=2)
@@ -48,6 +49,7 @@ def init_bensin(bot):
         chat_id = call.message.chat.id
         bot.answer_callback_query(call.id)
         action = call.data
+        print(f"[BENSIN] User {chat_id} memicu aksi callback: {action}")
         
         if action == "bsn_daftar":
             msg = bot.send_message(chat_id, "Kirimkan nama/merek motor Anda (contoh: Vario 125 2013):")
@@ -74,6 +76,7 @@ def init_bensin(bot):
             
         nama_motor = message.text
         user_bensin_state[chat_id] = {'nama_motor': nama_motor}
+        print(f"[BENSIN] User {chat_id} memulai pendaftaran motor: {nama_motor}")
         
         msg = bot.send_message(chat_id, f"Berapa Odometer saat ini pada motor {nama_motor}? (Ketik angka saja):")
         bot.register_next_step_handler(msg, save_motor, bot)
@@ -90,9 +93,11 @@ def init_bensin(bot):
             
             register_motor(chat_id, nama_motor, odo_awal)
             user_bensin_state.pop(chat_id, None)
+            print(f"[BENSIN] Motor {nama_motor} milik User {chat_id} berhasil disimpan dengan Odo Awal: {odo_awal}")
             
             bot.send_message(chat_id, f"✅ <b>Motor {nama_motor} berhasil didaftarkan!</b>\nOdometer awal ditetapkan pada {odo_awal:.1f} km.\n\nKetik /bensin saat Anda berada di SPBU.", parse_mode="HTML")
         except ValueError:
+            print(f"[BENSIN - ERROR] User {chat_id} gagal mendaftar, input odometer tidak valid: {message.text}")
             bot.send_message(chat_id, "⚠️ Odometer harus berupa angka (contoh: 45000.5). Pendaftaran dibatalkan.")
 
     # --- FLOW PENGISIAN BENSIN ---
@@ -105,10 +110,12 @@ def init_bensin(bot):
         try:
             odo_sekarang = float(message.text.replace(",", "."))
             user_bensin_state[chat_id]['odo_sekarang'] = odo_sekarang
+            print(f"[BENSIN] User {chat_id} input Odo SPBU: {odo_sekarang}")
             
             msg = bot.send_message(chat_id, "Berapa nominal Rupiah bensin yang Anda beli? (Hanya angka tanpa titik, misal: 25000)")
             bot.register_next_step_handler(msg, ask_harga_per_liter, bot)
         except ValueError:
+            print(f"[BENSIN - ERROR] User {chat_id} gagal input odo SPBU: {message.text}")
             bot.send_message(chat_id, "⚠️ Odometer harus angka desimal/bulat (contoh: 45000.5). Dibatalkan.")
         
     def ask_harga_per_liter(message, bot):
@@ -123,6 +130,7 @@ def init_bensin(bot):
             return
             
         user_bensin_state[chat_id]['rupiah'] = int(rupiah_bersih)
+        print(f"[BENSIN] User {chat_id} mengisi bensin sebesar: Rp{rupiah_bersih}")
         
         markup = types.InlineKeyboardMarkup(row_width=2)
         markup.add(
@@ -154,11 +162,13 @@ def init_bensin(bot):
             harga_per_liter = int(harga_bersih)
             
             liter = rupiah / harga_per_liter
+            print(f"[BENSIN] Kalkulasi User {chat_id}: Rp{rupiah} / {harga_per_liter} = {liter:.2f} Liter")
             
             # Simpan ke Database
             hasil = add_log_bensin(chat_id, odo_sekarang, rupiah, liter)
             
             if hasil:
+                print(f"[BENSIN] Log bensin User {chat_id} berhasil dicatat. Km/L: {hasil['kml']}")
                 pesan = (
                     f"⛽ <b>Pengisian Bensin Tersimpan!</b>\n\n"
                     f"💰 Biaya: Rp{rupiah:,}\n"
@@ -173,4 +183,5 @@ def init_bensin(bot):
             user_bensin_state.pop(chat_id, None)
             
         except Exception as e:
+            print(f"[BENSIN - FATAL ERROR] Terjadi kegagalan sistem untuk User {chat_id}: {e}")
             bot.send_message(chat_id, f"Terjadi kesalahan sistem: {e}")

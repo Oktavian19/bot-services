@@ -6,11 +6,12 @@ import threading
 import subprocess
 
 CHAT_ID = os.environ.get('ADMIN_CHAT_ID')
+speedtest_lock = threading.Lock()
 
 def check_connection():
     try:
-        socket.create_connection(("1.1.1.1", 53), timeout=3)
-        return True
+        with socket.create_connection(("1.1.1.1", 53), timeout=3):
+            return True
     except OSError:
         pass
     return False
@@ -76,6 +77,11 @@ def register_handlers(bot):
             bot.reply_to(message, "❌ Akses ditolak. Hanya Administrator yang bisa menjalankan perintah ini.")
             return
 
+        if not speedtest_lock.acquire(blocking=False):
+            print(f"[JARINGAN - WARNING] Sesi speedtest ditolak karena ada sesi lain yang sedang berjalan.")
+            bot.reply_to(message, "⏳ Speedtest sedang berjalan oleh pengguna lain/proses sebelumnya. Silakan tunggu hingga selesai.")
+            return
+
         # Loading
         loading_msg = bot.reply_to(message, "🚀 Sedang mengukur kecepatan internet server...\n<i>Mohon tunggu sekitar 20-30 detik ⏳</i>", parse_mode="HTML")
         
@@ -108,6 +114,8 @@ def register_handlers(bot):
             print(f"[JARINGAN - FATAL] Terjadi error internal saat menjalankan speedtest: {e}")
             bot.edit_message_text(chat_id=message.chat.id, message_id=loading_msg.message_id, 
                                   text=f"❌ Terjadi error internal:\n<code>{e}</code>", parse_mode="HTML")
+        finally:
+            speedtest_lock.release()
 
 # --- INITIALIZATION ---
 def init_jaringan(bot):

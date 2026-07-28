@@ -9,7 +9,7 @@ A multi-module Telegram bot that runs on a Debian server, providing internship m
 | **Magang** (Internship) | *(Archived / Disabled)* Monitors student internship status by scraping `jti.polinema.ac.id/jtiportal`. See [`modul/magang/README.md`](modul/magang/README.md) to reactivate. |
 | **Jaringan** (Network) | Pings `1.1.1.1` continuously. Detects downtime, measures duration, sends alerts to admin via Telegram. Also provides `/speedtest` command (requires Ookla Speedtest CLI). |
 | **Reminder** | Create, list, and delete reminders with date/time. Sends notifications when reminders are due. Uses `Asia/Jakarta` timezone. |
-| **Bensin** (Fuel) | Register a motorcycle with initial & current odometer readings. Log fuel refills and get statistics (km/L). |
+| **Bensin** (Fuel) | Register a motorcycle with initial & current odometer readings. Log fuel refills, view/edit/delete history, and get statistics (km/L). |
 
 ## Requirements
 

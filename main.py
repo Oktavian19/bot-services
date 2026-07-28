@@ -102,4 +102,4 @@ if __name__ == '__main__':
     thread_scheduler.start()      
     
     print("Telegram bot siap dan berjalan!")
-    bot.infinity_polling()
+    bot.infinity_polling(timeout=20, long_polling_timeout=20)

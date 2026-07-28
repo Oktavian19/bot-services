@@ -140,8 +140,8 @@ def ask_date(message, bot):
     """Stores the message and asks for the target date."""
     chat_id = message.chat.id
     
-    # Check if user cancels
-    if message.text.startswith('/'):
+    # Check if user cancels or inputs invalid non-text message
+    if not message.text or message.text.startswith('/'):
         bot.send_message(chat_id, "Pembuatan pengingat dibatalkan (Atau input tidak valid).")
         user_data_store.pop(chat_id, None)
         print(f"[REMINDER - WARNING] User {chat_id} membatalkan pembuatan pengingat.")
@@ -159,13 +159,13 @@ def ask_date(message, bot):
 def ask_prep_days(message, bot):
     """Stores the date and asks for preparation days."""
     chat_id = message.chat.id
-    date_text = message.text
-
-    if date_text.startswith('/'):
+    if not message.text or message.text.startswith('/'):
         bot.send_message(chat_id, "Pembuatan pengingat dibatalkan (Atau input tidak valid).")
         user_data_store.pop(chat_id, None)
         print(f"[REMINDER - WARNING] User {chat_id} membatalkan di tahap tanggal.")
         return
+
+    date_text = message.text
 
     try:
         # Validate date format
@@ -187,13 +187,13 @@ def ask_prep_days(message, bot):
 def ask_time(message, bot):
     """Stores prep days and asks for notification time."""
     chat_id = message.chat.id
-    prep_text = message.text
-
-    if prep_text.startswith('/'):
+    if not message.text or message.text.startswith('/'):
         bot.send_message(chat_id, "Pembuatan pengingat dibatalkan (Atau input tidak valid).")
         user_data_store.pop(chat_id, None)
         print(f"[REMINDER - WARNING] User {chat_id} membatalkan di tahap prep days.")
         return
+
+    prep_text = message.text
 
     if not prep_text.isdigit():
         msg = bot.send_message(chat_id, "⚠️ Harap masukkan angka saja (contoh: 3):")
@@ -206,20 +206,20 @@ def ask_time(message, bot):
     
     msg = bot.send_message(
         chat_id, 
-        "Di jam berapa saya harus mengirimkan pengingat ini setiap harinya?\n(Format: HH:MM, contoh: 07:00)"
+        "Di jam berapa saya me-referensi pengingat ini setiap harinya?\n(Format: HH:MM, contoh: 07:00)"
     )
     bot.register_next_step_handler(msg, save_reminder, bot)
 
 def save_reminder(message, bot):
     """Stores the time, saves everything to SQLite, and ends conversation."""
     chat_id = message.chat.id
-    time_text = message.text
-
-    if time_text.startswith('/'):
+    if not message.text or message.text.startswith('/'):
         bot.send_message(chat_id, "Pembuatan pengingat dibatalkan (Atau input tidak valid).")
         user_data_store.pop(chat_id, None)
         print(f"[REMINDER - WARNING] User {chat_id} membatalkan di tahap jam notify.")
         return
+
+    time_text = message.text
 
     try:
         # Validate time format
@@ -259,12 +259,12 @@ def save_reminder(message, bot):
 def update_field_process(message, bot, reminder_id, field):
     """Handles the user input for updating a specific field, including validation."""
     chat_id = message.chat.id
-    new_val = message.text
-
-    if new_val.startswith('/'):
+    if not message.text or message.text.startswith('/'):
         bot.send_message(chat_id, "❌ Perubahan dibatalkan.")
         print(f"[REMINDER - WARNING] User {chat_id} membatalkan proses edit {field}.")
         return
+
+    new_val = message.text
 
     try:
         # Validation rules based on the field being edited
@@ -337,5 +337,7 @@ def jalankan_scheduler(bot):
         except Exception as e:
             print(f"[REMINDER-SCHEDULER - FATAL] Error pada putaran scheduler: {e}")
             
-        # Sleep for 60 seconds to match the clock resolution
-        time.sleep(60)
+        # Sleep precisely to top of next minute to prevent clock drift
+        now_after = datetime.now(LOCAL_TZ)
+        sleep_seconds = max(1.0, 60.0 - now_after.second - (now_after.microsecond / 1_000_000.0))
+        time.sleep(sleep_seconds)

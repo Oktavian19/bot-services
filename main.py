@@ -7,7 +7,8 @@ from datetime import datetime
 import threading
 
 # Import modul
-from modul.magang import main as magang
+# [MODUL MAGANG ARSIP] Un-comment baris di bawah ini jika ingin mengaktifkan kembali:
+# from modul.magang import main as magang
 from modul.jaringan import main as jaringan
 from modul.reminder import main as reminder
 from modul.bensin import main as bensin
@@ -25,7 +26,8 @@ bot = telebot.TeleBot(TELEGRAM_TOKEN)
 def setup_bot_commands():
     commands = [
         types.BotCommand("start", "Tampilkan menu utama"),
-        types.BotCommand("magang", "Pusat kendali pemantauan magang"),
+        # [MODUL MAGANG ARSIP] Un-comment baris di bawah jika modul magang diaktifkan:
+        # types.BotCommand("magang", "Pusat kendali pemantauan magang"),
         types.BotCommand("reminder", "Manajemen agenda & pengingat"),
         types.BotCommand("ping", "Cek status koneksi server"),
         types.BotCommand("bensin", "Catatan konsumsi & riwayat BBM"),
@@ -40,12 +42,13 @@ def send_menu_utama(message):
     markup = types.InlineKeyboardMarkup(row_width=2) 
     
     tombol_ping = types.InlineKeyboardButton("🏓 Ping Server", callback_data="cb_ping")
-    tombol_magang = types.InlineKeyboardButton("🎓 Pusat Magang", callback_data="cb_magang")
+    # [MODUL MAGANG ARSIP] Un-comment baris di bawah dan sertakan tombol_magang ke markup.add(...) jika modul diaktifkan:
+    # tombol_magang = types.InlineKeyboardButton("🎓 Pusat Magang", callback_data="cb_magang")
     tombol_reminder = types.InlineKeyboardButton("🔔 Pengingat", callback_data="cb_reminder")
     tombol_speed = types.InlineKeyboardButton("🚀 Speedtest", callback_data="cb_speedtest")
     tombol_bensin = types.InlineKeyboardButton("⛽ BBM Motor", callback_data="cb_bensin")
     
-    markup.add(tombol_ping, tombol_magang, tombol_reminder, tombol_speed, tombol_bensin)
+    markup.add(tombol_ping, tombol_reminder, tombol_speed, tombol_bensin)
     
     bot.send_message(message.chat.id, "🎛 <b>Pusat Kendali Server</b>\nSilakan pilih salah satu menu di bawah ini:", 
                      parse_mode="HTML", reply_markup=markup)
@@ -64,9 +67,10 @@ def callback_listener(call):
         )
         bot.send_message(call.message.chat.id, balasan, parse_mode="HTML")
         
-    elif call.data == "cb_magang":
-        call.message.text = "/magang"
-        bot.process_new_messages([call.message])
+    # [MODUL MAGANG ARSIP] Un-comment di bawah jika modul magang diaktifkan:
+    # elif call.data == "cb_magang":
+    #     call.message.text = "/magang"
+    #     bot.process_new_messages([call.message])
         
     elif call.data == "cb_reminder":
         call.message.text = "/reminder"
@@ -86,7 +90,8 @@ if __name__ == '__main__':
     setup_bot_commands()
 
     # Inisialisasi Handler Modul
-    magang.init_magang(bot)
+    # [MODUL MAGANG ARSIP] Un-comment baris di bawah jika ingin mengaktifkan modul magang:
+    # magang.init_magang(bot)
     jaringan.init_jaringan(bot)
     reminder.init_reminder(bot)
     bensin.init_bensin(bot)

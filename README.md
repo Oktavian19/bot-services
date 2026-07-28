@@ -6,7 +6,7 @@ A multi-module Telegram bot that runs on a Debian server, providing internship m
 
 | Module | Description |
 |---|---|
-| **Magang** (Internship) | Monitors student internship status by scraping `jti.polinema.ac.id/jtiportal`. Stores encrypted credentials, runs periodic checks, and notifies on status changes. |
+| **Magang** (Internship) | *(Archived / Disabled)* Monitors student internship status by scraping `jti.polinema.ac.id/jtiportal`. See [`modul/magang/README.md`](modul/magang/README.md) to reactivate. |
 | **Jaringan** (Network) | Pings `1.1.1.1` continuously. Detects downtime, measures duration, sends alerts to admin via Telegram. Also provides `/speedtest` command (requires Ookla Speedtest CLI). |
 | **Reminder** | Create, list, and delete reminders with date/time. Sends notifications when reminders are due. Uses `Asia/Jakarta` timezone. |
 | **Bensin** (Fuel) | Register a motorcycle with initial & current odometer readings. Log fuel refills and get statistics (km/L). |
@@ -52,9 +52,10 @@ bot-services/
 ├── AGENTS.md                # Notes for AI coding assistants
 ├── .gitignore
 ├── modul/
-│   ├── magang/              # Internship monitoring
+│   ├── magang/              # Internship monitoring (Archived)
 │   │   ├── main.py          #   Scrapes portal, periodic checking thread
-│   │   └── database.py      #   SQLite + Fernet encryption
+│   │   ├── database.py      #   SQLite + Fernet encryption
+│   │   └── README.md        #   Reactivation & module documentation
 │   ├── jaringan/            # Network uptime monitoring
 │   │   ├── main.py          #   Ping loop, speedtest command
 │   │   └── database.py

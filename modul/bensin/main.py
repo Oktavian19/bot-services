@@ -61,8 +61,23 @@ def init_bensin(bot):
             
         elif action == "bsn_isi":
             user_bensin_state[chat_id] = {}
-            msg = bot.send_message(chat_id, "Berapa angka Odometer Anda saat ini di SPBU? (Hanya angka, contoh: 45000):")
+            markup = types.InlineKeyboardMarkup()
+            markup.add(types.InlineKeyboardButton("⏭ Lewati Odometer", callback_data="bsn_skip_odo"))
+            msg = bot.send_message(
+                chat_id, 
+                "Berapa angka Odometer Anda saat ini di SPBU?\n<i>(Ketik angka, contoh: 45000, atau klik tombol di bawah jika lupa/tanpa odo)</i>:", 
+                parse_mode="HTML",
+                reply_markup=markup
+            )
             bot.register_next_step_handler(msg, ask_rupiah_bensin, bot)
+            
+        elif action == "bsn_skip_odo":
+            bot.clear_step_handler_by_chat_id(chat_id)
+            bot.edit_message_reply_markup(chat_id=chat_id, message_id=call.message.message_id, reply_markup=None)
+            user_bensin_state[chat_id] = {'odo_sekarang': None}
+            print(f"[BENSIN] User {chat_id} memilih lewati odometer via tombol.")
+            msg = bot.send_message(chat_id, "Berapa nominal Rupiah bensin yang Anda beli? (Hanya angka tanpa titik, misal: 25000):")
+            bot.register_next_step_handler(msg, ask_harga_per_liter, bot)
         
         elif action.startswith("bsn_hrg_"):
             bot.clear_step_handler_by_chat_id(chat_id)
@@ -79,7 +94,10 @@ def init_bensin(bot):
                 markup = types.InlineKeyboardMarkup(row_width=1)
                 for log_id, odo, rupiah, liter, jarak, kml, tgl in logs:
                     tgl_singkat = str(tgl)[:10] if tgl else ""
-                    btn_text = f"📅 {tgl_singkat} | {odo:.0f} km | Rp{rupiah:,} ({liter:.2f}L)"
+                    if odo is None:
+                        btn_text = f"📅 {tgl_singkat} | [Tanpa Odo] | Rp{rupiah:,} ({liter:.2f}L)"
+                    else:
+                        btn_text = f"📅 {tgl_singkat} | {odo:.0f} km | Rp{rupiah:,} ({liter:.2f}L)"
                     markup.add(types.InlineKeyboardButton(btn_text, callback_data=f"bsn_log_{log_id}"))
                 
                 bot.send_message(chat_id, "📜 <b>Riwayat Pengisian Bensin (10 Terakhir)</b>\nKlik salah satu log untuk detail/edit/hapus:", parse_mode="HTML", reply_markup=markup)
@@ -91,14 +109,23 @@ def init_bensin(bot):
                 bot.send_message(chat_id, "⚠️ Log bensin tidak ditemukan.")
             else:
                 _, odo, rupiah, liter, jarak, kml, tgl = log
+                if odo is None:
+                    odo_teks = "- (Tanpa Odometer)"
+                    jarak_teks = "- (Belum ada odo)"
+                    kml_teks = "- (Menunggu odo berikutnya)"
+                else:
+                    odo_teks = f"{odo:.1f} km"
+                    jarak_teks = f"{jarak:.1f} km"
+                    kml_teks = f"{kml:.2f} km/L"
+                    
                 teks_detail = (
                     f"📝 <b>Detail Log Bensin #{log_id}</b>\n\n"
                     f"📅 <b>Tanggal:</b> {tgl}\n"
-                    f"📟 <b>Odometer:</b> {odo:.1f} km\n"
+                    f"📟 <b>Odometer:</b> {odo_teks}\n"
                     f"💰 <b>Biaya:</b> Rp{rupiah:,}\n"
                     f"💧 <b>Volume:</b> {liter:.2f} Liter\n"
-                    f"🛣 <b>Jarak Tempuh:</b> {jarak:.1f} km\n"
-                    f"📊 <b>Konsumsi:</b> {kml:.2f} km/L"
+                    f"🛣 <b>Jarak Tempuh:</b> {jarak_teks}\n"
+                    f"📊 <b>Konsumsi:</b> {kml_teks}"
                 )
                 markup = types.InlineKeyboardMarkup(row_width=2)
                 markup.add(
@@ -138,14 +165,40 @@ def init_bensin(bot):
             else:
                 user_bensin_state[chat_id] = {'edit_id': log_id}
                 odo_cur = log[1]
+                odo_cur_str = f"{odo_cur:.1f} km" if odo_cur is not None else "[Tanpa Odometer]"
+                
+                markup = types.InlineKeyboardMarkup()
+                markup.add(types.InlineKeyboardButton("⏭ Lewati / Tanpa Odometer", callback_data="bsn_edit_skip_odo"))
+                
                 msg = bot.send_message(
                     chat_id, 
                     f"✏️ <b>Edit Log Bensin #{log_id}</b> (1/3)\n\n"
-                    f"Berapa angka Odometer yang benar? (Hanya angka, contoh: 45000):\n"
-                    f"<i>Nilai saat ini: {odo_cur:.1f} km</i>",
-                    parse_mode="HTML"
+                    f"Berapa angka Odometer yang benar?\n"
+                    f"<i>(Hanya angka, contoh: 45000, atau klik tombol di bawah jika tanpa odo)</i>\n"
+                    f"<i>Nilai saat ini: {odo_cur_str}</i>",
+                    parse_mode="HTML",
+                    reply_markup=markup
                 )
                 bot.register_next_step_handler(msg, ask_edit_odo, bot)
+
+        elif action == "bsn_edit_skip_odo":
+            bot.clear_step_handler_by_chat_id(chat_id)
+            bot.edit_message_reply_markup(chat_id=chat_id, message_id=call.message.message_id, reply_markup=None)
+            if chat_id not in user_bensin_state or 'edit_id' not in user_bensin_state[chat_id]:
+                bot.send_message(chat_id, "⚠️ Sesi edit telah berakhir. Silakan pilih log kembali dari riwayat.")
+                return
+            user_bensin_state[chat_id]['edit_odo'] = None
+            log_id = user_bensin_state[chat_id]['edit_id']
+            log = get_log_bensin_by_id(log_id, chat_id)
+            rupiah_cur = log[2] if log else 0
+            msg = bot.send_message(
+                chat_id, 
+                f"✏️ <b>Edit Log Bensin #{log_id}</b> (2/3)\n\n"
+                f"Berapa nominal Rupiah yang benar? (Hanya angka, contoh: 25000):\n"
+                f"<i>Nilai saat ini: Rp{rupiah_cur:,}</i>",
+                parse_mode="HTML"
+            )
+            bot.register_next_step_handler(msg, ask_edit_rupiah, bot)
 
         elif action.startswith("bsn_edithrg_"):
             bot.clear_step_handler_by_chat_id(chat_id)
@@ -192,30 +245,42 @@ def init_bensin(bot):
         chat_id = message.chat.id
         if not message.text or message.text.startswith('/'):
             bot.send_message(chat_id, "❌ Dibatalkan.")
+            user_bensin_state.pop(chat_id, None)
             return
             
-        try:
-            odo_sekarang = float(message.text.replace(",", "."))
-            user_bensin_state[chat_id]['odo_sekarang'] = odo_sekarang
-            print(f"[BENSIN] User {chat_id} input Odo SPBU: {odo_sekarang}")
+        txt = message.text.strip().lower()
+        if txt in ['-', 'skip', 'lewati', '0', 'tidak', 'lupa']:
+            user_bensin_state[chat_id] = {'odo_sekarang': None}
+            print(f"[BENSIN] User {chat_id} memilih tanpa Odo SPBU.")
+        else:
+            try:
+                odo_sekarang = float(txt.replace(",", "."))
+                user_bensin_state[chat_id] = {'odo_sekarang': odo_sekarang}
+                print(f"[BENSIN] User {chat_id} input Odo SPBU: {odo_sekarang}")
+            except ValueError:
+                print(f"[BENSIN - ERROR] User {chat_id} gagal input odo SPBU: {message.text}")
+                bot.send_message(chat_id, "⚠️ Odometer harus angka desimal/bulat (contoh: 45000.5) atau '-' jika tanpa odo. Dibatalkan.")
+                user_bensin_state.pop(chat_id, None)
+                return
             
-            msg = bot.send_message(chat_id, "Berapa nominal Rupiah bensin yang Anda beli? (Hanya angka tanpa titik, misal: 25000)")
-            bot.register_next_step_handler(msg, ask_harga_per_liter, bot)
-        except ValueError:
-            print(f"[BENSIN - ERROR] User {chat_id} gagal input odo SPBU: {message.text}")
-            bot.send_message(chat_id, "⚠️ Odometer harus angka desimal/bulat (contoh: 45000.5). Dibatalkan.")
+        msg = bot.send_message(chat_id, "Berapa nominal Rupiah bensin yang Anda beli? (Hanya angka tanpa titik, misal: 25000):")
+        bot.register_next_step_handler(msg, ask_harga_per_liter, bot)
         
     def ask_harga_per_liter(message, bot):
         chat_id = message.chat.id
         if not message.text or message.text.startswith('/'):
             bot.send_message(chat_id, "❌ Dibatalkan.")
+            user_bensin_state.pop(chat_id, None)
             return
             
         rupiah_bersih = message.text.replace(".", "").replace(",", "")
         if not rupiah_bersih.isdigit():
             bot.send_message(chat_id, "⚠️ Nominal salah. Dibatalkan.")
+            user_bensin_state.pop(chat_id, None)
             return
             
+        if chat_id not in user_bensin_state:
+            user_bensin_state[chat_id] = {}
         user_bensin_state[chat_id]['rupiah'] = int(rupiah_bersih)
         print(f"[BENSIN] User {chat_id} mengisi bensin sebesar: Rp{rupiah_bersih}")
         
@@ -241,13 +306,18 @@ def init_bensin(bot):
         harga_bersih = message.text.replace(".", "").replace(",", "")
         if not harga_bersih.isdigit():
             bot.send_message(chat_id, "⚠️ Harga salah. Dibatalkan.")
+            user_bensin_state.pop(chat_id, None)
             return
             
         try:
-            odo_sekarang = user_bensin_state[chat_id]['odo_sekarang']
-            rupiah = user_bensin_state[chat_id]['rupiah']
+            odo_sekarang = user_bensin_state.get(chat_id, {}).get('odo_sekarang')
+            rupiah = user_bensin_state.get(chat_id, {}).get('rupiah')
+            if rupiah is None:
+                bot.send_message(chat_id, "⚠️ Sesi pengisian bensin tidak valid. Silakan ulangi dari /bensin.")
+                user_bensin_state.pop(chat_id, None)
+                return
+                
             harga_per_liter = int(harga_bersih)
-            
             liter = rupiah / harga_per_liter
             print(f"[BENSIN] Kalkulasi User {chat_id}: Rp{rupiah} / {harga_per_liter} = {liter:.2f} Liter")
             
@@ -255,14 +325,27 @@ def init_bensin(bot):
             hasil = add_log_bensin(chat_id, odo_sekarang, rupiah, liter)
             
             if hasil:
-                print(f"[BENSIN] Log bensin User {chat_id} berhasil dicatat. Km/L: {hasil['kml']}")
-                pesan = (
-                    f"⛽ <b>Pengisian Bensin Tersimpan!</b>\n\n"
-                    f"💰 Biaya: Rp{rupiah:,}\n"
-                    f"💧 Volume: {hasil['liter']:.2f} Liter\n"
-                    f"🛣 Jarak Sejak Terakhir: {hasil['jarak']:.1f} km\n"
-                    f"📊 <b>Rata-rata Konsumsi: {hasil['kml']:.2f} km/L</b>"
-                )
+                if hasil.get("tanpa_odo"):
+                    print(f"[BENSIN] Log bensin tanpa odo User {chat_id} berhasil dicatat.")
+                    pesan = (
+                        f"⛽ <b>Pengisian Bensin Tersimpan!</b> (Tanpa Odometer)\n\n"
+                        f"💰 <b>Biaya:</b> Rp{rupiah:,}\n"
+                        f"💧 <b>Volume:</b> {hasil['liter']:.2f} Liter\n\n"
+                        f"📌 <i>Konsumsi km/L akan diakumulasikan dan dihitung otomatis saat Anda mencatat odometer pada pengisian berikutnya.</i>"
+                    )
+                else:
+                    print(f"[BENSIN] Log bensin User {chat_id} berhasil dicatat. Km/L: {hasil['kml']}")
+                    accum_info = ""
+                    if hasil.get("jumlah_log_tanpa_odo", 0) > 0:
+                        accum_info = f"\n🔄 <i>Mencakup akumulasi dari {hasil['jumlah_log_tanpa_odo']} pengisian tanpa odometer sebelumnya (Total BBM: {hasil['total_liter_akumulasi']:.2f} L).</i>\n"
+                        
+                    pesan = (
+                        f"⛽ <b>Pengisian Bensin Tersimpan!</b>\n\n"
+                        f"💰 <b>Biaya:</b> Rp{rupiah:,}\n"
+                        f"💧 <b>Volume:</b> {hasil['liter']:.2f} Liter\n"
+                        f"🛣 <b>Jarak Sejak Terakhir:</b> {hasil['jarak']:.1f} km\n"
+                        f"📊 <b>Rata-rata Konsumsi: {hasil['kml']:.2f} km/L</b>{accum_info}"
+                    )
                 bot.send_message(chat_id, pesan, parse_mode="HTML")
             else:
                 bot.send_message(chat_id, "⚠️ Gagal menyimpan. Motor belum didaftarkan.")
@@ -272,6 +355,7 @@ def init_bensin(bot):
         except Exception as e:
             print(f"[BENSIN - FATAL ERROR] Terjadi kegagalan sistem untuk User {chat_id}: {e}")
             bot.send_message(chat_id, f"Terjadi kesalahan sistem: {e}")
+            user_bensin_state.pop(chat_id, None)
 
     # --- FLOW EDIT BENSIN ---
     def ask_edit_odo(message, bot):
@@ -281,24 +365,30 @@ def init_bensin(bot):
             user_bensin_state.pop(chat_id, None)
             return
             
-        try:
-            edit_odo = float(message.text.replace(",", "."))
-            user_bensin_state[chat_id]['edit_odo'] = edit_odo
-            log_id = user_bensin_state[chat_id]['edit_id']
-            log = get_log_bensin_by_id(log_id, chat_id)
-            rupiah_cur = log[2] if log else 0
-            
-            msg = bot.send_message(
-                chat_id, 
-                f"✏️ <b>Edit Log Bensin #{log_id}</b> (2/3)\n\n"
-                f"Berapa nominal Rupiah yang benar? (Hanya angka, contoh: 25000):\n"
-                f"<i>Nilai saat ini: Rp{rupiah_cur:,}</i>",
-                parse_mode="HTML"
-            )
-            bot.register_next_step_handler(msg, ask_edit_rupiah, bot)
-        except ValueError:
-            bot.send_message(chat_id, "⚠️ Odometer harus angka desimal/bulat (contoh: 45000.5). Edit dibatalkan.")
-            user_bensin_state.pop(chat_id, None)
+        txt = message.text.strip().lower()
+        if txt in ['-', 'skip', 'lewati', '0', 'tidak', 'lupa']:
+            user_bensin_state[chat_id]['edit_odo'] = None
+        else:
+            try:
+                edit_odo = float(txt.replace(",", "."))
+                user_bensin_state[chat_id]['edit_odo'] = edit_odo
+            except ValueError:
+                bot.send_message(chat_id, "⚠️ Odometer harus angka desimal/bulat (contoh: 45000.5) atau '-' jika tanpa odo. Edit dibatalkan.")
+                user_bensin_state.pop(chat_id, None)
+                return
+                
+        log_id = user_bensin_state[chat_id]['edit_id']
+        log = get_log_bensin_by_id(log_id, chat_id)
+        rupiah_cur = log[2] if log else 0
+        
+        msg = bot.send_message(
+            chat_id, 
+            f"✏️ <b>Edit Log Bensin #{log_id}</b> (2/3)\n\n"
+            f"Berapa nominal Rupiah yang benar? (Hanya angka, contoh: 25000):\n"
+            f"<i>Nilai saat ini: Rp{rupiah_cur:,}</i>",
+            parse_mode="HTML"
+        )
+        bot.register_next_step_handler(msg, ask_edit_rupiah, bot)
 
     def ask_edit_rupiah(message, bot):
         chat_id = message.chat.id
@@ -354,11 +444,12 @@ def init_bensin(bot):
             updated = update_log_bensin(log_id, chat_id, edit_odo, edit_rupiah, liter)
             
             if updated:
+                odo_display = f"{edit_odo:.1f} km" if edit_odo is not None else "- (Tanpa Odometer)"
                 pesan = (
                     f"✅ <b>Log Bensin #{log_id} Berhasil Diperbarui!</b>\n\n"
-                    f"📟 Odometer: {edit_odo:.1f} km\n"
-                    f"💰 Biaya: Rp{edit_rupiah:,}\n"
-                    f"💧 Volume: {liter:.2f} Liter\n\n"
+                    f"📟 <b>Odometer:</b> {odo_display}\n"
+                    f"💰 <b>Biaya:</b> Rp{edit_rupiah:,}\n"
+                    f"💧 <b>Volume:</b> {liter:.2f} Liter\n\n"
                     f"<i>Statistik & konsumsi km/L telah dihitung ulang secara otomatis.</i>"
                 )
                 bot.send_message(chat_id, pesan, parse_mode="HTML")

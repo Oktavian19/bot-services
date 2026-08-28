@@ -4,7 +4,7 @@ import os
 DB_PATH = os.path.join(os.path.dirname(__file__), 'bensin.db')
 
 def setup_database():
-    """Membuat tabel motor dan riwayat bensin jika belum ada."""
+    """Membuat tabel motor dan riwayat bensin jika belum ada, serta migrasi skema bila diperlukan."""
     with sqlite3.connect(DB_PATH) as conn:
         cursor = conn.cursor()
         cursor.execute('PRAGMA journal_mode=WAL;')
@@ -14,8 +14,8 @@ def setup_database():
             CREATE TABLE IF NOT EXISTS motor (
                 chat_id INTEGER PRIMARY KEY,
                 nama_motor TEXT NOT NULL,
-                odometer_awal INTEGER NOT NULL,
-                odometer_terakhir INTEGER NOT NULL
+                odometer_awal REAL NOT NULL,
+                odometer_terakhir REAL NOT NULL
             )
         ''')
         
@@ -23,14 +23,40 @@ def setup_database():
             CREATE TABLE IF NOT EXISTS log_bensin (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 chat_id INTEGER NOT NULL,
-                odometer INTEGER NOT NULL,
+                odometer REAL,
                 rupiah INTEGER NOT NULL,
                 liter REAL NOT NULL,
-                jarak_tempuh INTEGER NOT NULL,
-                konsumsi_kml REAL NOT NULL,
+                jarak_tempuh REAL DEFAULT 0,
+                konsumsi_kml REAL DEFAULT 0,
                 tanggal DATETIME DEFAULT CURRENT_TIMESTAMP
             )
         ''')
+        
+        # Cek dan jalankan migrasi jika kolom odometer pada log_bensin masih berstatus NOT NULL
+        cursor.execute("PRAGMA table_info(log_bensin)")
+        columns = cursor.fetchall()
+        odo_col = next((c for c in columns if c[1] == 'odometer'), None)
+        if odo_col and odo_col[3] == 1:
+            print("[DB-BENSIN] Menjalankan migrasi skema tabel log_bensin (nullable odometer)...")
+            cursor.execute('''
+                CREATE TABLE log_bensin_migration (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    chat_id INTEGER NOT NULL,
+                    odometer REAL,
+                    rupiah INTEGER NOT NULL,
+                    liter REAL NOT NULL,
+                    jarak_tempuh REAL DEFAULT 0,
+                    konsumsi_kml REAL DEFAULT 0,
+                    tanggal DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+            cursor.execute('''
+                INSERT INTO log_bensin_migration (id, chat_id, odometer, rupiah, liter, jarak_tempuh, konsumsi_kml, tanggal)
+                SELECT id, chat_id, odometer, rupiah, liter, jarak_tempuh, konsumsi_kml, tanggal FROM log_bensin
+            ''')
+            cursor.execute('DROP TABLE log_bensin')
+            cursor.execute('ALTER TABLE log_bensin_migration RENAME TO log_bensin')
+            print("[DB-BENSIN] Migrasi skema log_bensin selesai!")
         
         cursor.execute('''
             CREATE INDEX IF NOT EXISTS idx_log_bensin_chat 
@@ -66,9 +92,55 @@ def add_log_bensin(chat_id, odometer_sekarang, rupiah, liter):
             return None
             
         odometer_terakhir = row[0]
-        jarak_tempuh = odometer_sekarang - odometer_terakhir
         
-        konsumsi_kml = round(jarak_tempuh / liter, 2) if liter > 0 else 0.0
+        # Kasus 1: Pengisian tanpa odometer
+        if odometer_sekarang is None:
+            cursor.execute('''
+                INSERT INTO log_bensin (chat_id, odometer, rupiah, liter, jarak_tempuh, konsumsi_kml)
+                VALUES (?, NULL, ?, ?, 0, 0)
+            ''', (chat_id, rupiah, liter))
+            conn.commit()
+            print(f"[DB-BENSIN] Log transaksi tanpa Odo (Rp{rupiah}, {liter}L) berhasil di-commit untuk User {chat_id}.")
+            return {
+                "tanpa_odo": True,
+                "rupiah": rupiah,
+                "liter": round(liter, 2),
+                "jarak": 0.0,
+                "kml": 0.0
+            }
+            
+        # Kasus 2: Pengisian dengan odometer (Hitung jarak & akumulasi liter pending)
+        odometer_sekarang = float(odometer_sekarang)
+        
+        # Cari ID log terakhir yang memiliki odometer
+        cursor.execute('''
+            SELECT id FROM log_bensin 
+            WHERE chat_id = ? AND odometer IS NOT NULL 
+            ORDER BY id DESC LIMIT 1
+        ''', (chat_id,))
+        last_odo_log = cursor.fetchone()
+        
+        if last_odo_log:
+            last_id = last_odo_log[0]
+            cursor.execute('''
+                SELECT SUM(liter), COUNT(*) 
+                FROM log_bensin 
+                WHERE chat_id = ? AND id > ? AND odometer IS NULL
+            ''', (chat_id, last_id))
+        else:
+            cursor.execute('''
+                SELECT SUM(liter), COUNT(*) 
+                FROM log_bensin 
+                WHERE chat_id = ? AND odometer IS NULL
+            ''', (chat_id,))
+            
+        row_pending = cursor.fetchone()
+        pending_liters = row_pending[0] if (row_pending and row_pending[0]) else 0.0
+        pending_count = row_pending[1] if (row_pending and row_pending[1]) else 0
+        
+        jarak_tempuh = odometer_sekarang - odometer_terakhir
+        total_liter = pending_liters + liter
+        konsumsi_kml = round(jarak_tempuh / total_liter, 2) if total_liter > 0 else 0.0
         
         cursor.execute('''
             INSERT INTO log_bensin (chat_id, odometer, rupiah, liter, jarak_tempuh, konsumsi_kml)
@@ -78,39 +150,54 @@ def add_log_bensin(chat_id, odometer_sekarang, rupiah, liter):
         cursor.execute('UPDATE motor SET odometer_terakhir = ? WHERE chat_id = ?', (odometer_sekarang, chat_id))
         conn.commit()
         
-    print(f"[DB-BENSIN] Log transaksi (Rp{rupiah}, {liter}L) & Update Odo ({odometer_sekarang}km) berhasil di-commit untuk User {chat_id}.")
+    print(f"[DB-BENSIN] Log transaksi (Rp{rupiah}, {liter}L) & Update Odo ({odometer_sekarang}km, Total L: {total_liter:.2f}) berhasil di-commit untuk User {chat_id}.")
     
     return {
+        "tanpa_odo": False,
         "jarak": jarak_tempuh,
         "liter": round(liter, 2),
-        "kml": konsumsi_kml
+        "kml": konsumsi_kml,
+        "total_liter_akumulasi": round(total_liter, 2),
+        "jumlah_log_tanpa_odo": pending_count
     }
 
 def get_statistik_bensin(chat_id):
     with sqlite3.connect(DB_PATH) as conn:
         cursor = conn.cursor()
         
-        cursor.execute('''
-            SELECT SUM(jarak_tempuh), SUM(liter) 
-            FROM log_bensin 
-            WHERE chat_id = ?
-        ''', (chat_id,))
-        row_sum = cursor.fetchone()
+        cursor.execute('SELECT odometer_awal, odometer_terakhir FROM motor WHERE chat_id = ?', (chat_id,))
+        motor = cursor.fetchone()
+        if not motor:
+            return {"rata_rata": 0.0, "terakhir": 0.0}
+            
+        odo_awal, odo_akhir = motor
+        total_jarak = odo_akhir - odo_awal
         
+        # Cari log ber-odometer terakhir
         cursor.execute('''
-            SELECT konsumsi_kml 
+            SELECT id, konsumsi_kml 
             FROM log_bensin 
-            WHERE chat_id = ? 
+            WHERE chat_id = ? AND odometer IS NOT NULL 
             ORDER BY id DESC LIMIT 1
         ''', (chat_id,))
-        row_last = cursor.fetchone()
+        last_odo_log = cursor.fetchone()
         
-    total_jarak = row_sum[0] if row_sum and row_sum[0] else 0
-    total_liter = row_sum[1] if row_sum and row_sum[1] else 0
-    
-    rata_rata_kml = round(total_jarak / total_liter, 2) if total_liter > 0 else 0.0
-    terakhir_kml = row_last[0] if row_last else 0.0
-    
+        if not last_odo_log or total_jarak <= 0:
+            return {"rata_rata": 0.0, "terakhir": 0.0}
+            
+        last_id, terakhir_kml = last_odo_log
+        
+        # Hitung total liter hanya dari awal sampai log ber-odometer terakhir
+        cursor.execute('''
+            SELECT SUM(liter) 
+            FROM log_bensin 
+            WHERE chat_id = ? AND id <= ?
+        ''', (chat_id, last_id))
+        row_sum = cursor.fetchone()
+        total_liter_verified = row_sum[0] if row_sum and row_sum[0] else 0.0
+        
+        rata_rata_kml = round(total_jarak / total_liter_verified, 2) if total_liter_verified > 0 else 0.0
+        
     return {
         "rata_rata": rata_rata_kml,
         "terakhir": terakhir_kml
@@ -127,6 +214,7 @@ def recalculate_bensin_logs(chat_id):
             return
             
         odometer_prev = row_motor[0]
+        pending_liters = 0.0
         
         cursor.execute('''
             SELECT id, odometer, liter 
@@ -137,17 +225,27 @@ def recalculate_bensin_logs(chat_id):
         logs = cursor.fetchall()
         
         for log_id, odometer, liter in logs:
-            jarak_tempuh = odometer - odometer_prev
-            konsumsi_kml = round(jarak_tempuh / liter, 2) if liter > 0 else 0.0
-            
-            cursor.execute('''
-                UPDATE log_bensin 
-                SET jarak_tempuh = ?, konsumsi_kml = ? 
-                WHERE id = ?
-            ''', (jarak_tempuh, konsumsi_kml, log_id))
-            
-            odometer_prev = odometer
-            
+            if odometer is None:
+                pending_liters += liter
+                cursor.execute('''
+                    UPDATE log_bensin 
+                    SET jarak_tempuh = 0, konsumsi_kml = 0 
+                    WHERE id = ?
+                ''', (log_id,))
+            else:
+                jarak_tempuh = odometer - odometer_prev
+                total_liter = pending_liters + liter
+                konsumsi_kml = round(jarak_tempuh / total_liter, 2) if total_liter > 0 else 0.0
+                
+                cursor.execute('''
+                    UPDATE log_bensin 
+                    SET jarak_tempuh = ?, konsumsi_kml = ? 
+                    WHERE id = ?
+                ''', (jarak_tempuh, konsumsi_kml, log_id))
+                
+                pending_liters = 0.0
+                odometer_prev = odometer
+                
         cursor.execute('UPDATE motor SET odometer_terakhir = ? WHERE chat_id = ?', (odometer_prev, chat_id))
         conn.commit()
     print(f"[DB-BENSIN] Recalculation selesai untuk User {chat_id}. Odo Terakhir: {odometer_prev}")
@@ -191,11 +289,18 @@ def delete_log_bensin(log_id, chat_id):
 def update_log_bensin(log_id, chat_id, odometer, rupiah, liter):
     with sqlite3.connect(DB_PATH) as conn:
         cursor = conn.cursor()
-        cursor.execute('''
-            UPDATE log_bensin 
-            SET odometer = ?, rupiah = ?, liter = ? 
-            WHERE id = ? AND chat_id = ?
-        ''', (odometer, rupiah, liter, log_id, chat_id))
+        if odometer is None:
+            cursor.execute('''
+                UPDATE log_bensin 
+                SET odometer = NULL, rupiah = ?, liter = ? 
+                WHERE id = ? AND chat_id = ?
+            ''', (rupiah, liter, log_id, chat_id))
+        else:
+            cursor.execute('''
+                UPDATE log_bensin 
+                SET odometer = ?, rupiah = ?, liter = ? 
+                WHERE id = ? AND chat_id = ?
+            ''', (odometer, rupiah, liter, log_id, chat_id))
         updated = cursor.rowcount > 0
         conn.commit()
         

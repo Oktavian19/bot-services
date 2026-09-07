@@ -1,7 +1,8 @@
 from telebot import types
 from .database import (
     setup_database, register_motor, get_motor, add_log_bensin, get_statistik_bensin,
-    get_logs_bensin, get_log_bensin_by_id, delete_log_bensin, update_log_bensin
+    get_logs_bensin, get_log_bensin_by_id, delete_log_bensin, update_log_bensin,
+    update_odometer_oli, get_status_oli
 )
 
 user_bensin_state = {}
@@ -19,32 +20,52 @@ def init_bensin(bot):
         markup = types.InlineKeyboardMarkup(row_width=2)
         
         if not motor:
-            text = "🏍 <b>Manajemen Bensin Motor</b>\n\nAnda belum mendaftarkan motor. Silakan daftarkan terlebih dahulu untuk melacak konsumsi BBM."
+            text = "🏍 <b>Manajemen Bensin & Motor</b>\n\nAnda belum mendaftarkan motor. Silakan daftarkan terlebih dahulu untuk melacak konsumsi BBM dan jadwal ganti oli."
             markup.add(types.InlineKeyboardButton("📝 Daftar Motor", callback_data="bsn_daftar"))
         else:
-            nama_motor, odo_awal, odo_akhir = motor
+            nama_motor, odo_awal, odo_akhir, odo_oli = motor
             total_jarak = odo_akhir - odo_awal
             
             stats = get_statistik_bensin(chat_id)
             if stats['rata_rata'] > 0:
                 teks_kml = (
-                    f"📊 <b>Rata-rata Keseluruhan:</b> {stats['rata_rata']:.2f} km/L\n"
+                    f"📊 <b>Rata-rata BBM:</b> {stats['rata_rata']:.2f} km/L\n"
                     f"📈 <b>Konsumsi Terakhir:</b> {stats['terakhir']:.2f} km/L\n\n"
                 )
             else:
                 teks_kml = "📊 <b>Data Konsumsi:</b> Belum ada riwayat pengisian bensin.\n\n"
+                
+            status_oli = get_status_oli(chat_id)
+            if not status_oli or status_oli['status'] == 'belum_diatur':
+                teks_oli = "🛢 <b>Status Oli:</b> ⚠️ Belum diatur (Klik 'Cek & Atur Oli')\n\n"
+            elif status_oli['status'] == 'aman':
+                teks_oli = f"🛢 <b>Status Oli:</b> 🟢 Aman (Sisa {status_oli['sisa_km']:.0f} km menuju {status_oli['target_oli']:.0f} km)\n\n"
+            elif status_oli['status'] == 'mendekati':
+                teks_oli = f"🛢 <b>Status Oli:</b> ⚠️ <b>Mendekati Ganti Oli!</b> (Sisa {status_oli['sisa_km']:.0f} km menuju {status_oli['target_oli']:.0f} km)\n\n"
+            else:
+                teks_oli = f"🛢 <b>Status Oli:</b> 🚨 <b>SUDAH MELEWATI JADWAL!</b> (Terlewat {abs(status_oli['sisa_km']):.0f} km dari {status_oli['target_oli']:.0f} km)\n\n"
             
             text = (
-                f"🏍 <b>Manajemen Bensin: {nama_motor}</b>\n\n"
+                f"🏍 <b>Manajemen Motor: {nama_motor}</b>\n\n"
                 f"📟 <b>Odometer Awal:</b> {odo_awal:.1f} km\n"
                 f"📟 <b>Odometer Terakhir:</b> {odo_akhir:.1f} km\n"
                 f"🛣 <b>Total Terpantau:</b> {total_jarak:.1f} km\n\n"
                 f"{teks_kml}"
+                f"{teks_oli}"
                 f"Silakan pilih menu di bawah ini:"
             )
-            markup.add(types.InlineKeyboardButton("⛽ Isi Bensin", callback_data="bsn_isi"))
-            markup.add(types.InlineKeyboardButton("📜 Riwayat & Edit/Hapus", callback_data="bsn_riwayat"))
-            markup.add(types.InlineKeyboardButton("⚙️ Ubah Motor (Reset)", callback_data="bsn_daftar"))
+            
+            if status_oli and status_oli['status'] in ['mendekati', 'terlewat']:
+                markup.add(types.InlineKeyboardButton("🛢️ Sudah Ganti Oli!", callback_data="bsn_action_ganti_oli"))
+                
+            markup.add(
+                types.InlineKeyboardButton("⛽ Isi Bensin", callback_data="bsn_isi"),
+                types.InlineKeyboardButton("📜 Riwayat & Edit/Hapus", callback_data="bsn_riwayat")
+            )
+            markup.add(
+                types.InlineKeyboardButton("🛢️ Cek & Atur Oli", callback_data="bsn_menu_oli"),
+                types.InlineKeyboardButton("⚙️ Ubah Motor (Reset)", callback_data="bsn_daftar")
+            )
             
         bot.send_message(chat_id, text, parse_mode="HTML", reply_markup=markup)
 
@@ -207,6 +228,114 @@ def init_bensin(bot):
             call.message.text = harga_pilihan
             process_edit_log_bensin(call.message, bot)
 
+        elif action == "bsn_reg_same_oli":
+            bot.clear_step_handler_by_chat_id(chat_id)
+            bot.edit_message_reply_markup(chat_id=chat_id, message_id=call.message.message_id, reply_markup=None)
+            if chat_id in user_bensin_state and 'nama_motor' in user_bensin_state[chat_id] and 'odo_awal' in user_bensin_state[chat_id]:
+                nama_motor = user_bensin_state[chat_id]['nama_motor']
+                odo_awal = user_bensin_state[chat_id]['odo_awal']
+                register_motor(chat_id, nama_motor, odo_awal, odo_awal)
+                user_bensin_state.pop(chat_id, None)
+                bot.send_message(
+                    chat_id, 
+                    f"✅ <b>Motor {nama_motor} berhasil didaftarkan!</b>\n\n"
+                    f"📟 Odometer awal: <b>{odo_awal:.1f} km</b>\n"
+                    f"🛢 Terakhir ganti oli: <b>{odo_awal:.1f} km</b>\n"
+                    f"🎯 Jadwal ganti oli berikutnya: <b>{odo_awal + 3000.0:.1f} km</b>\n\n"
+                    f"Ketik /bensin saat Anda berada di SPBU.", 
+                    parse_mode="HTML"
+                )
+
+        elif action == "bsn_menu_oli":
+            status_oli = get_status_oli(chat_id)
+            if not status_oli:
+                bot.send_message(chat_id, "⚠️ Data motor tidak ditemukan. Silakan daftarkan motor terlebih dahulu.")
+                return
+                
+            markup = types.InlineKeyboardMarkup(row_width=1)
+            
+            if status_oli['status'] == 'belum_diatur':
+                teks_detail = (
+                    f"🛢 <b>Informasi & Pengingat Ganti Oli</b>\n\n"
+                    f"⚠️ <b>Status:</b> Belum diatur.\n"
+                    f"📟 <b>Odometer Motor Saat Ini:</b> {status_oli['odo_sekarang']:.1f} km\n\n"
+                    f"<i>Silakan atur kilometer saat terakhir ganti oli agar bot dapat memantau jadwal penggantian oli setiap 3.000 km.</i>"
+                )
+                markup.add(types.InlineKeyboardButton("✏️ Atur Km Terakhir Ganti Oli", callback_data="bsn_edit_oli_manual"))
+            else:
+                terakhir_oli = status_oli['terakhir_oli']
+                target_oli = status_oli['target_oli']
+                odo_sekarang = status_oli['odo_sekarang']
+                jarak_sejak = status_oli['jarak_sejak_oli']
+                sisa_km = status_oli['sisa_km']
+                
+                if status_oli['status'] == 'aman':
+                    badge_status = f"🟢 <b>Aman</b> (Sisa {sisa_km:.0f} km)"
+                elif status_oli['status'] == 'mendekati':
+                    badge_status = f"⚠️ <b>Mendekati Jadwal!</b> (Sisa {sisa_km:.0f} km)"
+                else:
+                    badge_status = f"🚨 <b>SUDAH MELEWATI JADWAL!</b> (Terlewat {abs(sisa_km):.0f} km)"
+                    
+                teks_detail = (
+                    f"🛢 <b>Informasi & Pengingat Ganti Oli</b>\n\n"
+                    f"📊 <b>Status:</b> {badge_status}\n"
+                    f"📟 <b>Odometer Motor Saat Ini:</b> {odo_sekarang:.1f} km\n"
+                    f"🔧 <b>Terakhir Ganti Oli:</b> {terakhir_oli:.1f} km\n"
+                    f"🎯 <b>Jadwal Ganti Oli Berikutnya:</b> {target_oli:.1f} km\n"
+                    f"🛣 <b>Jarak Sejak Ganti Oli:</b> {jarak_sejak:.1f} km\n\n"
+                    f"<i>Jadwal ganti oli dihitung setiap 3.000 km dari kilometer ganti oli terakhir.</i>"
+                )
+                markup.add(types.InlineKeyboardButton("🛢️ Sudah Ganti Oli", callback_data="bsn_action_ganti_oli"))
+                markup.add(types.InlineKeyboardButton("✏️ Ubah Km Terakhir Ganti Oli", callback_data="bsn_edit_oli_manual"))
+                
+            markup.add(types.InlineKeyboardButton("🔙 Kembali ke Menu Hub", callback_data="bsn_back_hub"))
+            bot.send_message(chat_id, teks_detail, parse_mode="HTML", reply_markup=markup)
+
+        elif action == "bsn_action_ganti_oli":
+            motor = get_motor(chat_id)
+            if not motor:
+                bot.send_message(chat_id, "⚠️ Data motor tidak ditemukan.")
+                return
+            nama_motor, odo_awal, odo_akhir, odo_oli = motor
+            
+            markup = types.InlineKeyboardMarkup(row_width=1)
+            markup.add(
+                types.InlineKeyboardButton(f"✅ Gunakan Odo Saat Ini ({odo_akhir:.0f} km)", callback_data=f"bsn_set_oli_cur_{odo_akhir}"),
+                types.InlineKeyboardButton("✏️ Ketik Angka Odo Manual", callback_data="bsn_edit_oli_manual"),
+                types.InlineKeyboardButton("❌ Batal", callback_data="bsn_menu_oli")
+            )
+            bot.send_message(
+                chat_id,
+                f"🛢 <b>Konfirmasi Ganti Oli</b>\n\n"
+                f"Apakah penggantian oli dilakukan pada angka odometer saat ini (<b>{odo_akhir:.1f} km</b>)?\n\n"
+                f"Atau pilih ketik manual jika Anda mengganti oli pada angka km yang berbeda.",
+                parse_mode="HTML",
+                reply_markup=markup
+            )
+
+        elif action.startswith("bsn_set_oli_cur_"):
+            odo_val = float(action.replace("bsn_set_oli_cur_", ""))
+            update_odometer_oli(chat_id, odo_val)
+            bot.send_message(
+                chat_id,
+                f"✅ <b>Data Ganti Oli Berhasil Diperbarui!</b>\n\n"
+                f"🔧 Terakhir ganti oli: <b>{odo_val:.1f} km</b>\n"
+                f"🎯 Jadwal ganti oli berikutnya: <b>{odo_val + 3000.0:.1f} km</b>\n\n"
+                f"Status oli Anda telah diperbarui dan kembali normal.",
+                parse_mode="HTML"
+            )
+
+        elif action == "bsn_edit_oli_manual":
+            msg = bot.send_message(
+                chat_id,
+                "Berapa angka Odometer saat terakhir kali Anda ganti oli? (Ketik angka saja, contoh: 45000):"
+            )
+            bot.register_next_step_handler(msg, process_update_oli_manual, bot)
+
+        elif action == "bsn_back_hub":
+            call.message.text = "/bensin"
+            bot.process_new_messages([call.message])
+
     # --- FLOW PENDAFTARAN MOTOR ---
     def ask_odo_awal(message, bot):
         chat_id = message.chat.id
@@ -219,26 +348,85 @@ def init_bensin(bot):
         print(f"[BENSIN] User {chat_id} memulai pendaftaran motor: {nama_motor}")
         
         msg = bot.send_message(chat_id, f"Berapa Odometer saat ini pada motor {nama_motor}? (Ketik angka saja):")
-        bot.register_next_step_handler(msg, save_motor, bot)
+        bot.register_next_step_handler(msg, ask_odo_oli_awal, bot)
+
+    def ask_odo_oli_awal(message, bot):
+        chat_id = message.chat.id
+        if not message.text or message.text.startswith('/'):
+            bot.send_message(chat_id, "❌ Pendaftaran dibatalkan.")
+            user_bensin_state.pop(chat_id, None)
+            return
+            
+        try:
+            odo_awal = float(message.text.replace(",", "."))
+            user_bensin_state[chat_id]['odo_awal'] = odo_awal
+            
+            markup = types.InlineKeyboardMarkup()
+            markup.add(types.InlineKeyboardButton("Sama dengan Odo Saat Ini", callback_data="bsn_reg_same_oli"))
+            
+            msg = bot.send_message(
+                chat_id, 
+                f"🛢 <b>Jadwal Ganti Oli Motor</b>\n\n"
+                f"Di angka odometer berapa motor {user_bensin_state[chat_id]['nama_motor']} terakhir kali ganti oli?\n"
+                f"<i>(Ketik angka odometer, atau klik tombol di bawah jika baru saja ganti oli pada odo {odo_awal:.0f} km)</i>:",
+                parse_mode="HTML",
+                reply_markup=markup
+            )
+            bot.register_next_step_handler(msg, save_motor, bot)
+        except ValueError:
+            print(f"[BENSIN - ERROR] User {chat_id} gagal mendaftar, input odometer tidak valid: {message.text}")
+            bot.send_message(chat_id, "⚠️ Odometer harus berupa angka (contoh: 45000.5). Pendaftaran dibatalkan.")
+            user_bensin_state.pop(chat_id, None)
         
     def save_motor(message, bot):
         chat_id = message.chat.id
         if not message.text or message.text.startswith('/'):
             bot.send_message(chat_id, "❌ Pendaftaran dibatalkan.")
+            user_bensin_state.pop(chat_id, None)
             return
             
         try:
             nama_motor = user_bensin_state[chat_id]['nama_motor']
-            odo_awal = float(message.text.replace(",", "."))
+            odo_awal = user_bensin_state[chat_id]['odo_awal']
+            odo_oli = float(message.text.replace(",", "."))
             
-            register_motor(chat_id, nama_motor, odo_awal)
+            register_motor(chat_id, nama_motor, odo_awal, odo_oli)
             user_bensin_state.pop(chat_id, None)
-            print(f"[BENSIN] Motor {nama_motor} milik User {chat_id} berhasil disimpan dengan Odo Awal: {odo_awal}")
+            print(f"[BENSIN] Motor {nama_motor} milik User {chat_id} berhasil disimpan dengan Odo Awal: {odo_awal}, Odo Oli: {odo_oli}")
             
-            bot.send_message(chat_id, f"✅ <b>Motor {nama_motor} berhasil didaftarkan!</b>\nOdometer awal ditetapkan pada {odo_awal:.1f} km.\n\nKetik /bensin saat Anda berada di SPBU.", parse_mode="HTML")
+            bot.send_message(
+                chat_id, 
+                f"✅ <b>Motor {nama_motor} berhasil didaftarkan!</b>\n\n"
+                f"📟 Odometer awal: <b>{odo_awal:.1f} km</b>\n"
+                f"🛢 Terakhir ganti oli: <b>{odo_oli:.1f} km</b>\n"
+                f"🎯 Jadwal ganti oli berikutnya: <b>{odo_oli + 3000.0:.1f} km</b>\n\n"
+                f"Ketik /bensin saat Anda berada di SPBU.", 
+                parse_mode="HTML"
+            )
         except ValueError:
-            print(f"[BENSIN - ERROR] User {chat_id} gagal mendaftar, input odometer tidak valid: {message.text}")
-            bot.send_message(chat_id, "⚠️ Odometer harus berupa angka (contoh: 45000.5). Pendaftaran dibatalkan.")
+            print(f"[BENSIN - ERROR] User {chat_id} gagal mendaftar, input odometer oli tidak valid: {message.text}")
+            bot.send_message(chat_id, "⚠️ Odometer oli harus berupa angka (contoh: 44000). Pendaftaran dibatalkan.")
+            user_bensin_state.pop(chat_id, None)
+
+    def process_update_oli_manual(message, bot):
+        chat_id = message.chat.id
+        if not message.text or message.text.startswith('/'):
+            bot.send_message(chat_id, "❌ Batal mengubah odometer ganti oli.")
+            return
+            
+        txt = message.text.strip().replace(",", ".")
+        try:
+            odo_val = float(txt)
+            update_odometer_oli(chat_id, odo_val)
+            bot.send_message(
+                chat_id,
+                f"✅ <b>Data Ganti Oli Berhasil Diperbarui!</b>\n\n"
+                f"🔧 Terakhir ganti oli: <b>{odo_val:.1f} km</b>\n"
+                f"🎯 Jadwal ganti oli berikutnya: <b>{odo_val + 3000.0:.1f} km</b>",
+                parse_mode="HTML"
+            )
+        except ValueError:
+            bot.send_message(chat_id, "⚠️ Odometer harus berupa angka (contoh: 45000). Dibatalkan.")
 
     # --- FLOW PENGISIAN BENSIN ---
     def ask_rupiah_bensin(message, bot):
@@ -346,7 +534,20 @@ def init_bensin(bot):
                         f"🛣 <b>Jarak Sejak Terakhir:</b> {hasil['jarak']:.1f} km\n"
                         f"📊 <b>Rata-rata Konsumsi: {hasil['kml']:.2f} km/L</b>{accum_info}"
                     )
-                bot.send_message(chat_id, pesan, parse_mode="HTML")
+                    
+                    status_oli = get_status_oli(chat_id)
+                    reply_markup_oli = None
+                    if status_oli and status_oli['status'] in ['mendekati', 'terlewat']:
+                        if status_oli['status'] == 'terlewat':
+                            pesan += f"\n\n🚨 <b>PERINGATAN OLI:</b> Anda sudah melewati jadwal ganti oli sejauh <b>{abs(status_oli['sisa_km']):.0f} km</b>! Segera ganti oli motor Anda."
+                        else:
+                            pesan += f"\n\n⚠️ <b>PENGINGAT OLI:</b> Odometer sudah mendekati jadwal ganti oli (Sisa <b>{status_oli['sisa_km']:.0f} km</b> lagi menuju {status_oli['target_oli']:.0f} km)."
+                        reply_markup_oli = types.InlineKeyboardMarkup()
+                        reply_markup_oli.add(types.InlineKeyboardButton("🛢️ Sudah Ganti Oli", callback_data="bsn_action_ganti_oli"))
+                    
+                    bot.send_message(chat_id, pesan, parse_mode="HTML", reply_markup=reply_markup_oli)
+                    user_bensin_state.pop(chat_id, None)
+                    return
             else:
                 bot.send_message(chat_id, "⚠️ Gagal menyimpan. Motor belum didaftarkan.")
                 

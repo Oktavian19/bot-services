@@ -15,10 +15,20 @@ def setup_database():
                 chat_id INTEGER PRIMARY KEY,
                 nama_motor TEXT NOT NULL,
                 odometer_awal REAL NOT NULL,
-                odometer_terakhir REAL NOT NULL
+                odometer_terakhir REAL NOT NULL,
+                odometer_terakhir_oli REAL DEFAULT NULL
             )
         ''')
         
+        # Cek dan jalankan migrasi jika kolom odometer_terakhir_oli pada motor belum ada
+        cursor.execute("PRAGMA table_info(motor)")
+        columns_motor = cursor.fetchall()
+        col_names_motor = [c[1] for c in columns_motor]
+        if 'odometer_terakhir_oli' not in col_names_motor:
+            print("[DB-BENSIN] Menambahkan kolom odometer_terakhir_oli ke tabel motor...")
+            cursor.execute('ALTER TABLE motor ADD COLUMN odometer_terakhir_oli REAL DEFAULT NULL')
+            print("[DB-BENSIN] Kolom odometer_terakhir_oli berhasil ditambahkan!")
+
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS log_bensin (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -64,22 +74,66 @@ def setup_database():
         ''')
         conn.commit()
 
-def register_motor(chat_id, nama_motor, odometer_awal):
+def register_motor(chat_id, nama_motor, odometer_awal, odometer_terakhir_oli=None):
     with sqlite3.connect(DB_PATH) as conn:
         cursor = conn.cursor()
         cursor.execute('''
-            INSERT OR REPLACE INTO motor (chat_id, nama_motor, odometer_awal, odometer_terakhir)
-            VALUES (?, ?, ?, ?)
-        ''', (chat_id, nama_motor, odometer_awal, odometer_awal))
+            INSERT OR REPLACE INTO motor (chat_id, nama_motor, odometer_awal, odometer_terakhir, odometer_terakhir_oli)
+            VALUES (?, ?, ?, ?, ?)
+        ''', (chat_id, nama_motor, odometer_awal, odometer_awal, odometer_terakhir_oli))
         conn.commit()
-    print(f"[DB-BENSIN] Data motor '{nama_motor}' (Odo: {odometer_awal}) berhasil di-commit ke SQLite untuk User {chat_id}.")
+    print(f"[DB-BENSIN] Data motor '{nama_motor}' (Odo Awal: {odometer_awal}, Odo Oli: {odometer_terakhir_oli}) berhasil di-commit ke SQLite untuk User {chat_id}.")
 
 def get_motor(chat_id):
     with sqlite3.connect(DB_PATH) as conn:
         cursor = conn.cursor()
-        cursor.execute('SELECT nama_motor, odometer_awal, odometer_terakhir FROM motor WHERE chat_id = ?', (chat_id,))
+        cursor.execute('SELECT nama_motor, odometer_awal, odometer_terakhir, odometer_terakhir_oli FROM motor WHERE chat_id = ?', (chat_id,))
         res = cursor.fetchone()
     return res
+
+def update_odometer_oli(chat_id, odometer_oli):
+    with sqlite3.connect(DB_PATH) as conn:
+        cursor = conn.cursor()
+        cursor.execute('UPDATE motor SET odometer_terakhir_oli = ? WHERE chat_id = ?', (odometer_oli, chat_id))
+        updated = cursor.rowcount > 0
+        conn.commit()
+    if updated:
+        print(f"[DB-BENSIN] Odometer ganti oli diperbarui menjadi {odometer_oli} km untuk User {chat_id}.")
+    return updated
+
+def get_status_oli(chat_id):
+    motor = get_motor(chat_id)
+    if not motor:
+        return None
+    nama_motor, odo_awal, odo_akhir, odo_oli = motor
+    if odo_oli is None:
+        return {
+            "status": "belum_diatur",
+            "terakhir_oli": None,
+            "target_oli": None,
+            "odo_sekarang": odo_akhir,
+            "jarak_sejak_oli": 0.0,
+            "sisa_km": 0.0
+        }
+    target_oli = odo_oli + 3000.0
+    jarak_sejak_oli = odo_akhir - odo_oli
+    sisa_km = target_oli - odo_akhir
+    
+    if sisa_km < 0:
+        status = "terlewat"
+    elif sisa_km <= 200:
+        status = "mendekati"
+    else:
+        status = "aman"
+        
+    return {
+        "status": status,
+        "terakhir_oli": odo_oli,
+        "target_oli": target_oli,
+        "odo_sekarang": odo_akhir,
+        "jarak_sejak_oli": jarak_sejak_oli,
+        "sisa_km": sisa_km
+    }
 
 def add_log_bensin(chat_id, odometer_sekarang, rupiah, liter):
     with sqlite3.connect(DB_PATH) as conn:

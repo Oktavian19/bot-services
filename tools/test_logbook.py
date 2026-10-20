@@ -265,6 +265,48 @@ class TestGitLogbookAutomation(unittest.TestCase):
             mock_non_admin.from_user.id = 22222222
             self.assertFalse(logbook_main.check_message_admin(mock_non_admin))
 
+    def test_10_recursive_git_discovery(self):
+        """10. Auto-discovery git repositori bertingkat dan penamaan proyek."""
+        parent_dir = tempfile.mkdtemp()
+        try:
+            # 1. Nested repo di bawah folder proyek induk
+            nested_repo = os.path.join(parent_dir, "PROJECT-A", "nested_core")
+            os.makedirs(nested_repo, exist_ok=True)
+            subprocess.run(["git", "init"], cwd=nested_repo, check=True, stdout=subprocess.DEVNULL)
+
+            # 2. Direct repo di bawah parent
+            direct_repo = os.path.join(parent_dir, "project-b")
+            os.makedirs(direct_repo, exist_ok=True)
+            subprocess.run(["git", "init"], cwd=direct_repo, check=True, stdout=subprocess.DEVNULL)
+
+            # 3. Ignored directory
+            ignored_repo = os.path.join(parent_dir, "node_modules", "some-pkg")
+            os.makedirs(ignored_repo, exist_ok=True)
+            subprocess.run(["git", "init"], cwd=ignored_repo, check=True, stdout=subprocess.DEVNULL)
+
+            from pathlib import Path
+            discovered = logbook_cli.discover_git_repos(Path(parent_dir))
+
+            # Verifikasi penamaan proyek
+            self.assertIn("PROJECT-A", discovered)
+            self.assertEqual(discovered["PROJECT-A"], os.path.abspath(nested_repo))
+
+            self.assertIn("project-b", discovered)
+            self.assertEqual(discovered["project-b"], os.path.abspath(direct_repo))
+
+            # Verifikasi node_modules diabaikan
+            self.assertNotIn("node_modules", discovered)
+            self.assertNotIn("some-pkg", discovered)
+
+            # Verifikasi resolve_all_repositories
+            resolved = logbook_cli.resolve_all_repositories({"sai_group": parent_dir})
+            self.assertIn("PROJECT-A", resolved)
+            self.assertIn("project-b", resolved)
+
+        finally:
+            shutil.rmtree(parent_dir, ignore_errors=True)
+
 if __name__ == "__main__":
     unittest.main()
+
 

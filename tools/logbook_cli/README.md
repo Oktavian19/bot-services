@@ -14,13 +14,19 @@ Sesuaikan isi `config.json`:
 - `vps_endpoint`: URL endpoint VPS (misal `http://127.0.0.1:8088/api/logbook` atau domain HTTPS VPS Anda).
 - `api_token`: Token autentikasi yang sama dengan `LOGBOOK_API_TOKEN` di environment VPS.
 - `openai_api_key`: API key OpenAI (opsional, jika kosong akan otomatis menggunakan format ringkasan non-AI).
-- `repositories`: Pemetaan nama proyek ke path direktori git lokal di laptop.
+- `repositories`: Pemetaan nama proyek ke path direktori git lokal di laptop. **Mendukung folder induk** (misal `"sai": "/home/oktavian/Project/sai"`), script akan otomatis memindai seluruh subfolder bersarang dan menamai proyek berdasarkan folder tingkat pertama di bawahnya.
 
 ---
 
 ## 2. Penggunaan CLI
 
-### A. Preview (Tanpa kirim ke jaringan)
+### A. Scan Repositori (Auto-Discovery)
+Melihat seluruh repositori Git yang terdeteksi beserta status commit hari ini:
+```bash
+python tools/logbook_cli/logbook_cli.py scan
+```
+
+### B. Preview (Tanpa kirim ke jaringan)
 Melihat daftar commit dan draf ringkasan di terminal:
 ```bash
 python tools/logbook_cli/logbook_cli.py preview --no-ai
@@ -30,18 +36,19 @@ Atau untuk tanggal tertentu:
 python tools/logbook_cli/logbook_cli.py preview --date 2026-10-19
 ```
 
-### B. Run (Kirim Draf ke VPS)
+### C. Run (Kirim Draf ke VPS)
 Membaca commit hari ini dan mengirim draf ke Telegram bot di VPS:
 ```bash
 python tools/logbook_cli/logbook_cli.py run
 ```
 Jika tidak ada commit pada hari tersebut, script akan keluar dengan status informatif tanpa mengirim request ke VPS. Jika VPS sedang offline, payload otomatis disimpan di `pending_queue.db`.
 
-### C. Send Pending (Coba Ulang Kirim)
+### D. Send Pending (Coba Ulang Kirim)
 Mencoba mengirim ulang draf yang sebelumnya gagal terkirim karena masalah jaringan:
 ```bash
 python tools/logbook_cli/logbook_cli.py send-pending
 ```
+
 
 ---
 

@@ -19,11 +19,13 @@ def load_config(config_path: Path = DEFAULT_CONFIG_PATH) -> dict:
         "vps_endpoint": os.environ.get("LOGBOOK_VPS_URL", "http://127.0.0.1:8088/api/logbook"),
         "api_token": os.environ.get("LOGBOOK_API_TOKEN", ""),
         "openai_api_key": os.environ.get("OPENAI_API_KEY", ""),
+        "openai_base_url": os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1"),
         "openai_model": os.environ.get("OPENAI_MODEL", "gpt-4o-mini"),
         "jam_masuk": os.environ.get("LOGBOOK_JAM_MASUK", "07:10"),
         "jam_pulang": os.environ.get("LOGBOOK_JAM_PULANG", "16:25"),
         "repositories": {}
     }
+
 
     if config_path.exists():
         try:
@@ -86,6 +88,74 @@ def get_pending_payloads() -> list:
         conn.close()
 
 
+SKIP_DIRS = {
+    'node_modules', 'vendor', '.venv', 'venv', 'build', 'dist', 
+    '.cache', '.dart_tool', '.cargo', 'target', '.pub-cache', '__pycache__'
+}
+
+def discover_git_repos(root_path: Path, max_depth: int = 5) -> dict:
+    """
+    Memindai root_path secara rekursif untuk menemukan seluruh direktori git.
+    Mengembalikan dict {project_name: str(repo_path)}.
+    Jika repo bersarang di bawah root_path, nama proyek diambil dari folder tingkat pertama
+    di bawah root_path (misal: sai/SHIN-SEMUT/shin_semut -> SHIN-SEMUT).
+    """
+    found_repos = {}
+    root_resolved = root_path.expanduser().resolve()
+    if not root_resolved.exists() or not root_resolved.is_dir():
+        return found_repos
+
+    # Jika root_path sendiri adalah git repo langsung
+    if (root_resolved / ".git").exists():
+        return {root_resolved.name: str(root_resolved)}
+
+    root_parts_len = len(root_resolved.parts)
+
+    for current_dir, dirs, files in os.walk(root_resolved, topdown=True):
+        cur_path = Path(current_dir)
+        rel_depth = len(cur_path.parts) - root_parts_len
+
+        # Batasi kedalaman traverse
+        if rel_depth >= max_depth:
+            dirs[:] = []
+            continue
+
+        # Prune folder blacklist / hidden
+        dirs[:] = [d for d in dirs if d not in SKIP_DIRS and not d.startswith('.')]
+
+        # Cek apakah direktori saat ini memiliki .git
+        if (cur_path / ".git").exists() and cur_path != root_resolved:
+            rel_parts = cur_path.relative_to(root_resolved).parts
+            proj_name = rel_parts[0] if rel_parts else cur_path.name
+            found_repos[proj_name] = str(cur_path)
+            # Jangan traverse ke dalam repo yang sudah ditemukan
+            dirs[:] = []
+
+    return found_repos
+
+def resolve_all_repositories(repositories_config: dict) -> dict:
+    """
+    Menyelesaikan mapping konfigurasi repositori:
+    - Jika entri berupa git repository langsung, gunakan langsung.
+    - Jika entri berupa folder biasa (seperti folder induk 'sai'), jalankan auto-discovery.
+    """
+    resolved = {}
+    for alias, path_str in repositories_config.items():
+        path_obj = Path(path_str).expanduser().resolve()
+        if not path_obj.exists():
+            print(f"[WARN] Path {path_str} ({alias}) tidak ditemukan.", file=sys.stderr)
+            continue
+
+        if (path_obj / ".git").exists():
+            resolved[alias] = str(path_obj)
+        elif path_obj.is_dir():
+            discovered = discover_git_repos(path_obj)
+            if not discovered:
+                print(f"[WARN] Tidak ditemukan repositori Git di dalam {path_str}.", file=sys.stderr)
+            for proj_name, repo_dir in discovered.items():
+                resolved[proj_name] = repo_dir
+    return resolved
+
 def get_commits_for_date(repo_name: str, repo_path: str, date_str: str) -> list:
     """
     Membaca commit tanggal target dari repositori lokal secara read-only.
@@ -128,11 +198,13 @@ def get_commits_for_date(repo_name: str, repo_path: str, date_str: str) -> list:
     return commits
 
 def collect_all_commits(repositories: dict, target_date: str) -> list:
+    resolved_repos = resolve_all_repositories(repositories)
     all_commits = []
-    for repo_name, repo_path in repositories.items():
+    for repo_name, repo_path in resolved_repos.items():
         commits = get_commits_for_date(repo_name, repo_path, target_date)
         all_commits.extend(commits)
     return all_commits
+
 
 def generate_summary(commits: list, config: dict, force_no_ai: bool = False) -> str:
     """
@@ -167,14 +239,18 @@ def generate_summary(commits: list, config: dict, force_no_ai: bool = False) -> 
                 "temperature": 0.3
             }).encode("utf-8")
 
+            base_url = config.get("openai_base_url", "https://api.openai.com/v1").rstrip("/")
+            endpoint_url = f"{base_url}/chat/completions"
+
             req = urllib.request.Request(
-                "https://api.openai.com/v1/chat/completions",
+                endpoint_url,
                 data=req_body,
                 headers={
                     "Authorization": f"Bearer {api_key}",
                     "Content-Type": "application/json"
                 }
             )
+
 
             with urllib.request.urlopen(req, timeout=30) as resp:
                 res_data = json.loads(resp.read().decode("utf-8"))
@@ -313,12 +389,36 @@ def cmd_send_pending(args, config):
             print(f"❌ Gagal mengirim ulang {date_str}: {msg}")
             save_pending_payload(idemp_key, payload, msg)
 
+def cmd_scan(args, config):
+    repos = config.get("repositories", {})
+    if not repos:
+        print("Belum ada repositori atau folder induk yang dikonfigurasi di config.json.")
+        return
+
+    resolved = resolve_all_repositories(repos)
+    print("=" * 65)
+    print(f"DAFTAR REPOSITORI GIT TERDETEKSI ({len(resolved)} Repositori)")
+    print("=" * 65)
+    if not resolved:
+        print("Tidak ada repositori Git yang ditemukan.")
+        return
+
+    today_str = datetime.now().strftime("%Y-%m-%d")
+    for name, path in sorted(resolved.items()):
+        commits_today = get_commits_for_date(name, path, today_str)
+        status_commit = f"({len(commits_today)} commit hari ini)" if commits_today else "(0 commit hari ini)"
+        print(f"• {name:<18} : {path} {status_commit}")
+    print("=" * 65)
+
 def main():
     base_parser = argparse.ArgumentParser(add_help=False)
     base_parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG_PATH, help="Path ke file konfigurasi json")
 
     parser = argparse.ArgumentParser(description="Git Logbook Automation CLI", parents=[base_parser])
     subparsers = parser.add_subparsers(dest="command", required=True)
+
+    # scan
+    subparsers.add_parser("scan", parents=[base_parser], help="Pindai dan tampilkan daftar repositori Git yang terdeteksi")
 
     # preview
     p_prev = subparsers.add_parser("preview", parents=[base_parser], help="Lihat draf logbook tanpa kirim ke VPS")
@@ -336,8 +436,9 @@ def main():
     args = parser.parse_args()
     config = load_config(args.config)
 
-
-    if args.command == "preview":
+    if args.command == "scan":
+        cmd_scan(args, config)
+    elif args.command == "preview":
         cmd_preview(args, config)
     elif args.command == "run":
         cmd_run(args, config)
@@ -345,4 +446,5 @@ def main():
         cmd_send_pending(args, config)
 
 if __name__ == "__main__":
+
     main()

@@ -243,5 +243,28 @@ class TestGitLogbookAutomation(unittest.TestCase):
             res_override = website.submit_logbook_to_dermaga(draft, override_id="777")
             self.assertEqual(res_override["status"], "SUCCESS")
 
+    def test_9_admin_auth_verification(self):
+        """9. Verifikasi admin mengizinkan pesan bot dengan chat.id admin & membersihkan quote."""
+        from modul.logbook import main as logbook_main
+
+        with patch.dict(os.environ, {"ADMIN_CHAT_ID": "'1186041989'"}):
+            self.assertEqual(logbook_main.get_admin_chat_id(), "1186041989")
+            self.assertTrue(logbook_main.is_admin("1186041989"))
+            self.assertTrue(logbook_main.is_admin(1186041989))
+            self.assertFalse(logbook_main.is_admin(99999999))
+
+            # Simulasi pesan dari tombol menu callback (di mana from_user adalah bot, tapi chat.id adalah admin)
+            mock_menu_msg = MagicMock()
+            mock_menu_msg.chat.id = 1186041989
+            mock_menu_msg.from_user.id = 8794413205  # Bot ID
+            self.assertTrue(logbook_main.check_message_admin(mock_menu_msg))
+
+            # Simulasi pesan dari non-admin
+            mock_non_admin = MagicMock()
+            mock_non_admin.chat.id = 22222222
+            mock_non_admin.from_user.id = 22222222
+            self.assertFalse(logbook_main.check_message_admin(mock_non_admin))
+
 if __name__ == "__main__":
     unittest.main()
+

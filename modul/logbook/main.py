@@ -11,13 +11,24 @@ from .database import (
 from .website import submit_logbook_to_dermaga
 from .server import run_http_server
 
-ADMIN_CHAT_ID_STR = os.environ.get('ADMIN_CHAT_ID')
-ADMIN_CHAT_ID = int(ADMIN_CHAT_ID_STR) if ADMIN_CHAT_ID_STR else None
+def get_admin_chat_id() -> str:
+    raw = os.environ.get('ADMIN_CHAT_ID', '')
+    return raw.strip("'\" ")
 
-def is_admin(user_id: int) -> bool:
-    if not ADMIN_CHAT_ID:
+def is_admin(chat_or_user_id) -> bool:
+    admin_id = get_admin_chat_id()
+    if not admin_id:
         return True
-    return user_id == ADMIN_CHAT_ID
+    return str(chat_or_user_id).strip() == admin_id
+
+def check_message_admin(message) -> bool:
+    """Periksa apakah chat.id atau from_user.id merupakan admin."""
+    if is_admin(message.chat.id):
+        return True
+    if getattr(message, 'from_user', None) and is_admin(message.from_user.id):
+        return True
+    return False
+
 
 def format_draft_message(draft: dict) -> str:
     """Format tampilan pesan konfirmasi logbook ke Telegram HTML."""
@@ -74,9 +85,12 @@ def build_draft_keyboard(draft_id: int):
 
 def send_draft_confirmation(bot, draft_id: int):
     """Mengirim pesan konfirmasi draf baru ke Telegram Admin."""
-    if not ADMIN_CHAT_ID:
+    admin_id_str = get_admin_chat_id()
+    if not admin_id_str:
         print("[LOGBOOK - WARN] ADMIN_CHAT_ID belum diatur, notifikasi draf dilewati.")
         return
+
+    admin_chat_id = int(admin_id_str) if admin_id_str.isdigit() else admin_id_str
 
     draft = get_draft(draft_id)
     if not draft:
@@ -86,15 +100,15 @@ def send_draft_confirmation(bot, draft_id: int):
     markup = build_draft_keyboard(draft_id)
 
     try:
-        msg = bot.send_message(ADMIN_CHAT_ID, text, parse_mode="HTML", reply_markup=markup)
+        msg = bot.send_message(admin_chat_id, text, parse_mode="HTML", reply_markup=markup)
         update_telegram_message_info(draft_id, msg.chat.id, msg.message_id)
-        print(f"[LOGBOOK] Pesan konfirmasi draf #{draft_id} terkirim ke Admin ({ADMIN_CHAT_ID}).")
+        print(f"[LOGBOOK] Pesan konfirmasi draf #{draft_id} terkirim ke Admin ({admin_chat_id}).")
     except Exception as e:
         print(f"[LOGBOOK - ERROR] Gagal mengirim pesan konfirmasi draf: {e}")
 
 def handle_edit_input(message, bot, draft_id: int):
     """Handler langkah berikutnya untuk menerima teks revisi ringkasan."""
-    if not is_admin(message.from_user.id):
+    if not check_message_admin(message):
         return
 
     new_text = message.text.strip()
@@ -122,7 +136,7 @@ def init_logbook(bot):
 
     @bot.message_handler(commands=['logbook'])
     def cmd_logbook(message):
-        if not is_admin(message.from_user.id):
+        if not check_message_admin(message):
             bot.send_message(message.chat.id, "⛔ Akses ditolak. Anda bukan admin bot.")
             return
 
@@ -160,7 +174,7 @@ def init_logbook(bot):
 
     @bot.message_handler(commands=['set_dermaga_auth'])
     def cmd_set_auth(message):
-        if not is_admin(message.from_user.id):
+        if not check_message_admin(message):
             bot.send_message(message.chat.id, "⛔ Akses ditolak.")
             return
 
@@ -182,9 +196,11 @@ def init_logbook(bot):
 
     @bot.callback_query_handler(func=lambda call: call.data.startswith('log_'))
     def callback_logbook(call):
-        if not is_admin(call.from_user.id):
+        is_authorized = is_admin(call.from_user.id) or (call.message and is_admin(call.message.chat.id))
+        if not is_authorized:
             bot.answer_callback_query(call.id, "Akses ditolak.", show_alert=True)
             return
+
 
         bot.answer_callback_query(call.id)
         data = call.data

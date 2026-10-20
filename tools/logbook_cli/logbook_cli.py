@@ -219,23 +219,28 @@ def generate_summary(commits: list, config: dict, force_no_ai: bool = False) -> 
     api_key = config.get("openai_api_key", "").strip()
     if not force_no_ai and api_key:
         try:
-            # Format metadata untuk AI prompt (HANYA subject, hash pendek, dan project)
-            items = [f"- [{c['project']}] ({c['hash']}) {c['subject']}" for c in commits]
+            # Format metadata untuk AI prompt (project dan subject)
+            items = [f"- [{c['project']}] {c['subject']}" for c in commits]
             commit_text = "\n".join(items)
 
             default_system_prompt = (
-                "Anda adalah asisten penyusun logbook kerja magang/developer profesional. "
-                "Tugas Anda adalah merangkum daftar commit menjadi narasi deskripsi logbook harian formal "
-                "dalam Bahasa Indonesia yang ringkas, padat, dan jelas (1-2 paragraf). "
-                "Sebutkan nama proyek secara ringkas dan wajar dalam kalimat kegiatan tanpa mengulang-ulang. "
-                "Jangan mengarang aktivitas di luar yang tercantum dalam commit. Hindari bullet list pada output narasi."
+                "Anda adalah asisten penyusun logbook kerja magang software engineer profesional. "
+                "Tugas Anda adalah merangkum commit harian menjadi deskripsi kegiatan logbook yang sangat ringkas, padat, dan elegan.\n\n"
+                "Aturan Penulisan:\n"
+                "1. Panjang tepat 1 kalimat ringkas (maksimal 2 kalimat jika cakupan pekerjaan sangat luas dan beragam).\n"
+                "2. WAJIB diawali langsung dengan kata kerja aktif formal berimbuhan Me- (seperti: Mengembangkan, Menyempurnakan, Menambahkan, Memperbaiki, Melanjutkan pengembangan).\n"
+                "3. Dilarang menggunakan kata pengantar, pembuka basa-basi (seperti 'Hari ini...', 'Melakukan...', 'Aktivitas yang dilakukan...'), maupun bullet point.\n"
+                "4. Penempatan nama proyek:\n"
+                "   - Untuk 1 proyek: letakkan di akhir klausa kegiatan dengan pola '... pada proyek [NAMA_PROYEK].'\n"
+                "   - Untuk lebih dari 1 proyek: gabungkan secara alami dengan konjungsi, seperti '... pada proyek [PROYEK_A], serta ... pada [PROYEK_B].' (atau '... pada proyek A dan B' jika pekerjaannya serupa).\n"
+                "5. Gunakan istilah teknis utama secara padat dan wajar tanpa mencantumkan hash commit atau detail mikro kode."
             )
             system_prompt = config.get("system_prompt", default_system_prompt).strip()
             custom_prompt = config.get("custom_prompt", "").strip()
             if custom_prompt:
-                system_prompt = f"{system_prompt} {custom_prompt}"
+                system_prompt = f"{system_prompt}\n{custom_prompt}"
 
-            user_prompt = f"Berikut daftar commit hari ini:\n{commit_text}\n\nBuat ringkasan aktivitas logbook:"
+            user_prompt = f"Berikut daftar commit hari ini:\n{commit_text}\n\nBuat deskripsi kegiatan logbook:"
 
             req_body = json.dumps({
                 "model": config.get("openai_model", "gpt-4o-mini"),
@@ -243,7 +248,7 @@ def generate_summary(commits: list, config: dict, force_no_ai: bool = False) -> 
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt}
                 ],
-                "temperature": 0.3
+                "temperature": 0.2
             }).encode("utf-8")
 
             base_url = config.get("openai_base_url", "https://api.openai.com/v1").rstrip("/")

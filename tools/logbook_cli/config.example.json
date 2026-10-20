@@ -1,0 +1,11 @@
+{
+  "vps_endpoint": "http://127.0.0.1:8088/api/logbook",
+  "api_token": "ganti-dengan-LOGBOOK_API_TOKEN-anda",
+  "openai_api_key": "sk-...",
+  "openai_model": "gpt-4o-mini",
+  "jam_masuk": "07:10",
+  "jam_pulang": "16:25",
+  "repositories": {
+    "bot-services": "/home/oktavian/Project/Script/bot-services"
+  }
+}

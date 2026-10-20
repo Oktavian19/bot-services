@@ -12,6 +12,7 @@ import threading
 from modul.jaringan import main as jaringan
 from modul.reminder import main as reminder
 from modul.bensin import main as bensin
+from modul.logbook import main as logbook
 
 # --- PATCH FORCE IPV4 ---
 def allowed_gai_family():
@@ -31,6 +32,7 @@ def setup_bot_commands():
         types.BotCommand("reminder", "Manajemen agenda & pengingat"),
         types.BotCommand("ping", "Cek status koneksi server"),
         types.BotCommand("bensin", "Catatan konsumsi & riwayat BBM"),
+        types.BotCommand("logbook", "Pusat kendali logbook DERMAGA"),
     ]
     bot.set_my_commands(commands)
     print("[+] Menu rekomendasi command berhasil diterapkan!")
@@ -47,8 +49,9 @@ def send_menu_utama(message):
     tombol_reminder = types.InlineKeyboardButton("🔔 Pengingat", callback_data="cb_reminder")
     tombol_speed = types.InlineKeyboardButton("🚀 Speedtest", callback_data="cb_speedtest")
     tombol_bensin = types.InlineKeyboardButton("⛽ BBM Motor", callback_data="cb_bensin")
+    tombol_logbook = types.InlineKeyboardButton("📖 Logbook", callback_data="cb_logbook")
     
-    markup.add(tombol_ping, tombol_reminder, tombol_speed, tombol_bensin)
+    markup.add(tombol_ping, tombol_reminder, tombol_speed, tombol_bensin, tombol_logbook)
     
     bot.send_message(message.chat.id, "🎛 <b>Pusat Kendali Server</b>\nSilakan pilih salah satu menu di bawah ini:", 
                      parse_mode="HTML", reply_markup=markup)
@@ -84,6 +87,10 @@ def callback_listener(call):
         call.message.text = "/bensin"
         bot.process_new_messages([call.message])
 
+    elif call.data == "cb_logbook":
+        call.message.text = "/logbook"
+        bot.process_new_messages([call.message])
+
 if __name__ == '__main__':
     print("Memulai inisialisasi layanan...")
     
@@ -95,11 +102,18 @@ if __name__ == '__main__':
     jaringan.init_jaringan(bot)
     reminder.init_reminder(bot)
     bensin.init_bensin(bot)
+    logbook.init_logbook(bot)
 
     print("Memulai background scheduler untuk reminder...")
     thread_scheduler = threading.Thread(target=reminder.jalankan_scheduler, args=(bot,))
     thread_scheduler.daemon = True
     thread_scheduler.start()      
-    
+
+    print("Memulai background receiver untuk logbook...")
+    thread_logbook = threading.Thread(target=logbook.jalankan_server, args=(bot,))
+    thread_logbook.daemon = True
+    thread_logbook.start()
+
     print("Telegram bot siap dan berjalan!")
     bot.infinity_polling(timeout=20, long_polling_timeout=20)
+

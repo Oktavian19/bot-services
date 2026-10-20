@@ -21,6 +21,7 @@ def load_config(config_path: Path = DEFAULT_CONFIG_PATH) -> dict:
         "openai_api_key": os.environ.get("OPENAI_API_KEY", ""),
         "openai_base_url": os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1"),
         "openai_model": os.environ.get("OPENAI_MODEL", "gpt-4o-mini"),
+        "custom_prompt": os.environ.get("LOGBOOK_CUSTOM_PROMPT", ""),
         "jam_masuk": os.environ.get("LOGBOOK_JAM_MASUK", "07:10"),
         "jam_pulang": os.environ.get("LOGBOOK_JAM_PULANG", "16:25"),
         "repositories": {}
@@ -222,12 +223,18 @@ def generate_summary(commits: list, config: dict, force_no_ai: bool = False) -> 
             items = [f"- [{c['project']}] ({c['hash']}) {c['subject']}" for c in commits]
             commit_text = "\n".join(items)
 
-            system_prompt = (
+            default_system_prompt = (
                 "Anda adalah asisten penyusun logbook kerja magang/developer profesional. "
                 "Tugas Anda adalah merangkum daftar commit menjadi narasi deskripsi logbook harian formal "
                 "dalam Bahasa Indonesia yang ringkas, padat, dan jelas (1-2 paragraf). "
+                "Sebutkan nama proyek secara ringkas dan wajar dalam kalimat kegiatan tanpa mengulang-ulang. "
                 "Jangan mengarang aktivitas di luar yang tercantum dalam commit. Hindari bullet list pada output narasi."
             )
+            system_prompt = config.get("system_prompt", default_system_prompt).strip()
+            custom_prompt = config.get("custom_prompt", "").strip()
+            if custom_prompt:
+                system_prompt = f"{system_prompt} {custom_prompt}"
+
             user_prompt = f"Berikut daftar commit hari ini:\n{commit_text}\n\nBuat ringkasan aktivitas logbook:"
 
             req_body = json.dumps({

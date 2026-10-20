@@ -4,6 +4,7 @@
   "openai_api_key": "sk-...",
   "openai_base_url": "https://api.openai.com/v1",
   "openai_model": "gpt-4o-mini",
+  "custom_prompt": "Sebutkan nama proyek secara singkat dan padat.",
 
   "jam_masuk": "07:10",
   "jam_pulang": "16:25",

@@ -313,7 +313,10 @@ def send_payload_to_vps(payload: dict, config: dict) -> tuple:
         err_content = he.read().decode("utf-8", errors="replace")
         return False, f"HTTP Error {he.code}: {err_content}"
     except Exception as e:
-        return False, f"Network Error: {str(e)}"
+        err_hint = ""
+        if "8088" in endpoint and ("127.0.0.1" in endpoint or "localhost" in endpoint):
+            err_hint = " (Pastikan SSH tunnel aktif: 'ssh -f -N -L 8088:127.0.0.1:8088 bot-azure')"
+        return False, f"Network Error: {str(e)}{err_hint}"
 
 # --- CLI COMMANDS ---
 

@@ -137,6 +137,70 @@ def handle_edit_input(message, bot, draft_id: int):
         reply_markup=markup
     )
 
+def render_logbook_menu(chat_id: int, user_id: int = None) -> tuple:
+    """Helper untuk merender tampilan menu utama /logbook beserta Inline Keyboard."""
+    user_meta = get_user_by_chat_id(chat_id)
+    admin = is_admin(chat_id) or (user_id and is_admin(user_id))
+
+    markup = types.InlineKeyboardMarkup(row_width=2)
+
+    if not user_meta and not admin:
+        text = (
+            "📖 <b>Pusat Kendali Logbook DERMAGA</b>\n\n"
+            "⚠️ <b>Akun Anda belum terdaftar.</b>\n\n"
+            "Untuk mulai menggunakan otomatisasi logbook harian, daftarkan akun DERMAGA Anda:\n"
+            "👉 <code>/daftar_logbook &lt;username&gt; &lt;password&gt;</code>\n\n"
+            "<i>Catatan: Pesan yang berisi password akan langsung dihapus otomatis oleh bot demi keamanan.</i>"
+        )
+        markup.add(types.InlineKeyboardButton("🔄 Refresh Status", callback_data="log_menu_refresh"))
+        return text, markup
+
+    drafts = get_recent_drafts(chat_id=chat_id, limit=5) if user_meta else []
+    username_str = user_meta['username'] if user_meta else "(Admin Mode)"
+    token_str = (user_meta['api_token'][:8] + "..." + user_meta['api_token'][-6:]) if (user_meta and user_meta.get('api_token')) else "-"
+
+    text = (
+        f"📖 <b>Pusat Kendali Logbook DERMAGA</b>\n"
+        f"👤 Akun DERMAGA: <code>{username_str}</code>\n"
+        f"🔑 Token CLI: <code>{token_str}</code>\n\n"
+        f"<b>Riwayat Draf Anda Terakhir:</b>\n"
+    )
+
+    if not drafts:
+        text += "<i>Belum ada draf logbook tercatat untuk akun Anda.</i>\n"
+    else:
+        status_emojis = {
+            'pending': '⏳ Pending',
+            'approved': '👍 Disetujui',
+            'submitted': '✅ Berhasil Submit',
+            'skipped': '⏩ Dilewati',
+            'cancelled': '❌ Dibatalkan',
+            'failed': '⚠️ Gagal Submit'
+        }
+        for d in drafts:
+            st = status_emojis.get(d['status'], d['status'])
+            text += f"• #{d['id']} | <code>{d['date']}</code> | {st}\n"
+
+    if admin:
+        total_users = len(get_all_users())
+        text += f"\n👑 <b>Admin Panel:</b>\n• Total Pengguna Terdaftar: <b>{total_users}</b>\n"
+
+    text += "\nSilakan pilih menu di bawah ini:"
+
+    # Tombol interaktif utama
+    btn_cek = types.InlineKeyboardButton("📋 Cek Logbook", callback_data="log_menu_cek")
+    btn_token = types.InlineKeyboardButton("🔑 Token CLI", callback_data="log_menu_token")
+    btn_refresh = types.InlineKeyboardButton("🔄 Refresh", callback_data="log_menu_refresh")
+    btn_hapus = types.InlineKeyboardButton("🗑️ Hapus Akun", callback_data="log_menu_hapus")
+    markup.add(btn_cek, btn_token)
+    markup.add(btn_refresh, btn_hapus)
+
+    if admin:
+        btn_admin = types.InlineKeyboardButton("👥 Daftar Pengguna (Admin)", callback_data="log_menu_admin_users")
+        markup.add(btn_admin)
+
+    return text, markup
+
 def init_logbook(bot):
     """Inisialisasi modul logbook, database, command Telegram, dan callback."""
     setup_database()
@@ -144,60 +208,9 @@ def init_logbook(bot):
 
     @bot.message_handler(commands=['logbook'])
     def cmd_logbook(message):
-        chat_id = message.chat.id
-        user_meta = get_user_by_chat_id(chat_id)
-        admin = check_message_admin(message)
-
-        if not user_meta and not admin:
-            text = (
-                "📖 <b>Pusat Kendali Logbook DERMAGA</b>\n\n"
-                "⚠️ <b>Akun Anda belum terdaftar.</b>\n\n"
-                "Untuk mulai menggunakan otomatisasi logbook harian, daftarkan akun DERMAGA Anda:\n"
-                "👉 <code>/daftar_logbook &lt;username&gt; &lt;password&gt;</code>\n\n"
-                "<i>Catatan: Pesan yang berisi password akan langsung dihapus otomatis oleh bot demi keamanan.</i>"
-            )
-            bot.send_message(chat_id, text, parse_mode="HTML")
-            return
-
-        drafts = get_recent_drafts(chat_id=chat_id, limit=5) if user_meta else []
-        username_str = user_meta['username'] if user_meta else "(Admin Mode)"
-        token_str = (user_meta['api_token'][:8] + "..." + user_meta['api_token'][-6:]) if (user_meta and user_meta.get('api_token')) else "-"
-
-        text = (
-            f"📖 <b>Pusat Kendali Logbook DERMAGA</b>\n"
-            f"👤 Akun DERMAGA: <code>{username_str}</code>\n"
-            f"🔑 Token CLI: <code>{token_str}</code>\n\n"
-            f"<b>Riwayat Draf Anda Terakhir:</b>\n"
-        )
-
-        if not drafts:
-            text += "<i>Belum ada draf logbook tercatat untuk akun Anda.</i>\n"
-        else:
-            status_emojis = {
-                'pending': '⏳ Pending',
-                'approved': '👍 Disetujui',
-                'submitted': '✅ Berhasil Submit',
-                'skipped': '⏩ Dilewati',
-                'cancelled': '❌ Dibatalkan',
-                'failed': '⚠️ Gagal Submit'
-            }
-            for d in drafts:
-                st = status_emojis.get(d['status'], d['status'])
-                text += f"• #{d['id']} | <code>{d['date']}</code> | {st}\n"
-
-        text += (
-            f"\n💡 <b>Perintah pendukung:</b>\n"
-            f"• <code>/token_logbook</code> untuk melihat & menyalin API token lengkap untuk CLI.\n"
-            f"• <code>/cek_logbook</code> untuk melihat tabel logbook langsung dari portal DERMAGA.\n"
-            f"• <code>/daftar_logbook &lt;user&gt; &lt;pass&gt;</code> untuk memperbarui akun login.\n"
-            f"• <code>/hapus_akun_logbook</code> untuk menghapus akun Anda dari bot."
-        )
-
-        if admin:
-            total_users = len(get_all_users())
-            text += f"\n\n👑 <b>Admin Panel:</b>\n• Total Pengguna Terdaftar: <b>{total_users}</b>\n• <code>/admin_logbook</code> untuk daftar detail pengguna."
-
-        bot.send_message(chat_id, text, parse_mode="HTML")
+        from_id = getattr(message, 'from_user', None).id if getattr(message, 'from_user', None) else None
+        text, markup = render_logbook_menu(message.chat.id, from_id)
+        bot.send_message(message.chat.id, text, parse_mode="HTML", reply_markup=markup)
 
     @bot.message_handler(commands=['daftar_logbook', 'login_logbook', 'set_dermaga_auth'])
     def cmd_daftar_logbook(message):
@@ -246,16 +259,18 @@ def init_logbook(bot):
                 f"🔑 <b>API Token CLI Anda:</b>\n"
                 f"<code>{token}</code>\n\n"
                 f"📋 <b>Konfigurasi di Laptop / CLI Anda:</b>\n"
-                f"Buka file <code>tools/logbook_cli/config.json</code> dan isi token di atas:\n"
+                f"Buka file <code>tools/logbook_cli/config.json</code> dan sesuaikan field <code>api_token</code>:\n"
                 f"<pre>"
                 f'{{\n'
-                f'  "server_url": "http://127.0.0.1:8088",\n'
+                f'  "vps_endpoint": "http://127.0.0.1:8088/api/logbook",\n'
                 f'  "api_token": "{token}"\n'
                 f'}}'
                 f"</pre>\n"
-                f"💡 <i>Token ini unik untuk Anda. Jika lupa, cek kapan saja dengan <code>/token_logbook</code>.</i>"
+                f"💡 <i>Token ini unik untuk Anda. Jika lupa, cek kapan saja melalui menu <code>/logbook</code> atau tombol '🔑 Token CLI'.</i>"
             )
-            bot.edit_message_text(success_text, message.chat.id, loading.message_id, parse_mode="HTML")
+            markup = types.InlineKeyboardMarkup()
+            markup.add(types.InlineKeyboardButton("📖 Buka Menu Logbook", callback_data="log_menu_back"))
+            bot.edit_message_text(success_text, message.chat.id, loading.message_id, parse_mode="HTML", reply_markup=markup)
             print(f"[LOGBOOK] User {message.chat.id} ({username}) berhasil terdaftar/update.")
         except Exception as e:
             bot.edit_message_text(f"❌ Terjadi kesalahan saat menyimpan akun: {e}", message.chat.id, loading.message_id)
@@ -275,12 +290,20 @@ def init_logbook(bot):
         token = user['api_token']
         markup = types.InlineKeyboardMarkup()
         markup.add(types.InlineKeyboardButton("🔄 Buat Ulang Token", callback_data="log_regen_token"))
+        markup.add(types.InlineKeyboardButton("⬅️ Kembali ke Menu Logbook", callback_data="log_menu_back"))
 
         text = (
             f"🔑 <b>API Token CLI Logbook Anda</b>\n\n"
             f"👤 Akun: <code>{user['username']}</code>\n"
             f"Token:\n<code>{token}</code>\n\n"
-            f"Salin dan masukkan token di atas pada konfigurasi <code>tools/logbook_cli/config.json</code>."
+            f"📋 <b>Konfigurasi di Laptop:</b>\n"
+            f"Buka file <code>tools/logbook_cli/config.json</code> dan sesuaikan field <code>api_token</code>:\n"
+            f"<pre>"
+            f'{{\n'
+            f'  "vps_endpoint": "http://127.0.0.1:8088/api/logbook",\n'
+            f'  "api_token": "{token}"\n'
+            f'}}'
+            f"</pre>"
         )
         bot.send_message(message.chat.id, text, parse_mode="HTML", reply_markup=markup)
 
@@ -300,11 +323,16 @@ def init_logbook(bot):
         loading = bot.send_message(message.chat.id, "⏳ <i>Sedang mengambil data tabel logbook dari DERMAGA...</i>", parse_mode="HTML")
         try:
             entries = fetch_dermaga_table(chat_id=message.chat.id)
+            markup = types.InlineKeyboardMarkup()
+            markup.add(types.InlineKeyboardButton("⬅️ Kembali ke Menu Logbook", callback_data="log_menu_back"))
+
             if not entries:
                 bot.edit_message_text(
-                    "ℹ️ Belum ada entri logbook yang tercatat di tabel DERMAGA akun Anda.",
+                    f"ℹ️ Belum ada entri logbook yang tercatat di tabel DERMAGA akun <code>{user['username']}</code>.",
                     message.chat.id,
-                    loading.message_id
+                    loading.message_id,
+                    parse_mode="HTML",
+                    reply_markup=markup
                 )
                 return
 
@@ -322,7 +350,7 @@ def init_logbook(bot):
             if len(entries) > 10:
                 text += f"<i>...dan {len(entries) - 10} entri lainnya di DERMAGA.</i>"
 
-            bot.edit_message_text(text, message.chat.id, loading.message_id, parse_mode="HTML")
+            bot.edit_message_text(text, message.chat.id, loading.message_id, parse_mode="HTML", reply_markup=markup)
         except Exception as err:
             bot.edit_message_text(f"❌ Gagal mengambil data DERMAGA: {err}", message.chat.id, loading.message_id)
 
@@ -347,8 +375,11 @@ def init_logbook(bot):
             return
 
         users = get_all_users()
+        markup = types.InlineKeyboardMarkup()
+        markup.add(types.InlineKeyboardButton("⬅️ Kembali ke Menu Logbook", callback_data="log_menu_back"))
+
         if not users:
-            bot.send_message(message.chat.id, "ℹ️ Belum ada pengguna logbook yang terdaftar.")
+            bot.send_message(message.chat.id, "ℹ️ Belum ada pengguna logbook yang terdaftar.", reply_markup=markup)
             return
 
         text = f"👥 <b>Daftar Pengguna Logbook Terdaftar ({len(users)} User):</b>\n\n"
@@ -361,14 +392,94 @@ def init_logbook(bot):
                 f"  Token: <code>{token_snippet}</code> | Status: {status}\n"
                 f"  Terdaftar: <code>{u['created_at']}</code>\n\n"
             )
-        bot.send_message(message.chat.id, text, parse_mode="HTML")
+        bot.send_message(message.chat.id, text, parse_mode="HTML", reply_markup=markup)
 
     @bot.callback_query_handler(func=lambda call: call.data.startswith('log_'))
     def callback_logbook(call):
         data = call.data
 
-        # Handler khusus buat ulang token
-        if data == "log_regen_token":
+        # --- MENU CALLBACKS (IN-PLACE NAVIGATION) ---
+        if data in ("log_menu_refresh", "log_menu_back"):
+            bot.answer_callback_query(call.id)
+            text, markup = render_logbook_menu(call.message.chat.id, call.from_user.id)
+            try:
+                bot.edit_message_text(text, call.message.chat.id, call.message.message_id, parse_mode="HTML", reply_markup=markup)
+            except Exception:
+                pass
+            return
+
+        elif data == "log_menu_cek":
+            bot.answer_callback_query(call.id)
+            user = get_user_by_chat_id(call.message.chat.id)
+            if not user:
+                markup = types.InlineKeyboardMarkup()
+                markup.add(types.InlineKeyboardButton("⬅️ Kembali ke Menu Logbook", callback_data="log_menu_back"))
+                bot.edit_message_text("⚠️ Akun DERMAGA Anda belum terdaftar.", call.message.chat.id, call.message.message_id, reply_markup=markup)
+                return
+
+            try:
+                bot.edit_message_text("⏳ <i>Sedang mengambil data tabel logbook dari DERMAGA...</i>", call.message.chat.id, call.message.message_id, parse_mode="HTML")
+            except Exception:
+                pass
+
+            try:
+                entries = fetch_dermaga_table(chat_id=call.message.chat.id)
+                markup = types.InlineKeyboardMarkup()
+                markup.add(types.InlineKeyboardButton("⬅️ Kembali ke Menu Logbook", callback_data="log_menu_back"))
+
+                if not entries:
+                    text = f"ℹ️ Belum ada entri logbook yang tercatat di tabel DERMAGA akun <code>{user['username']}</code>."
+                else:
+                    text = f"📋 <b>Daftar Logbook DERMAGA ({len(entries)} Entri) - {user['username']}:</b>\n\n"
+                    for e in entries[:10]:
+                        desc = html.escape(e['pekerjaan'])
+                        if len(desc) > 160:
+                            desc = desc[:157] + "..."
+                        text += (
+                            f"📅 <b>{e['tanggal_text']}</b> (ID: <code>#{e['web_id'] or '-'}</code>)\n"
+                            f"⏱️ <code>{e['jam']}</code> | Ket: <b>{e['keterangan']}</b> | Status: <b>{e['status_verif']}</b>\n"
+                            f"📝 <i>{desc}</i>\n\n"
+                        )
+                    if len(entries) > 10:
+                        text += f"<i>...dan {len(entries) - 10} entri lainnya di DERMAGA.</i>"
+
+                bot.edit_message_text(text, call.message.chat.id, call.message.message_id, parse_mode="HTML", reply_markup=markup)
+            except Exception as err:
+                markup = types.InlineKeyboardMarkup()
+                markup.add(types.InlineKeyboardButton("⬅️ Kembali ke Menu Logbook", callback_data="log_menu_back"))
+                bot.edit_message_text(f"❌ Gagal mengambil data DERMAGA: {err}", call.message.chat.id, call.message.message_id, reply_markup=markup)
+            return
+
+        elif data == "log_menu_token":
+            bot.answer_callback_query(call.id)
+            user = get_user_by_chat_id(call.message.chat.id)
+            if not user:
+                markup = types.InlineKeyboardMarkup()
+                markup.add(types.InlineKeyboardButton("⬅️ Kembali ke Menu Logbook", callback_data="log_menu_back"))
+                bot.edit_message_text("⚠️ Akun Anda belum terdaftar.", call.message.chat.id, call.message.message_id, reply_markup=markup)
+                return
+
+            token_val = user.get('api_token', '')
+            text = (
+                f"🔑 <b>API Token CLI Logbook Anda</b>\n\n"
+                f"👤 Akun: <code>{user['username']}</code>\n"
+                f"Token:\n<code>{token_val}</code>\n\n"
+                f"📋 <b>Konfigurasi di Laptop:</b>\n"
+                f"Buka file <code>tools/logbook_cli/config.json</code> dan sesuaikan field <code>api_token</code>:\n"
+                f"<pre>"
+                f'{{\n'
+                f'  "vps_endpoint": "http://127.0.0.1:8088/api/logbook",\n'
+                f'  "api_token": "{token_val}"\n'
+                f'}}'
+                f"</pre>"
+            )
+            markup = types.InlineKeyboardMarkup()
+            markup.add(types.InlineKeyboardButton("🔄 Buat Ulang Token", callback_data="log_regen_token"))
+            markup.add(types.InlineKeyboardButton("⬅️ Kembali ke Menu Logbook", callback_data="log_menu_back"))
+            bot.edit_message_text(text, call.message.chat.id, call.message.message_id, parse_mode="HTML", reply_markup=markup)
+            return
+
+        elif data == "log_regen_token":
             bot.answer_callback_query(call.id)
             user = get_user_by_chat_id(call.from_user.id)
             if not user:
@@ -380,12 +491,74 @@ def init_logbook(bot):
                 f"🔄 <b>API Token Berhasil Dibuat Ulang!</b>\n\n"
                 f"👤 Akun: <code>{user['username']}</code>\n"
                 f"Token Baru:\n<code>{new_token}</code>\n\n"
-                f"⚠️ Jangan lupa untuk memperbarui file <code>tools/logbook_cli/config.json</code> di laptop Anda."
+                f"⚠️ Jangan lupa untuk memperbarui field <code>api_token</code> pada <code>tools/logbook_cli/config.json</code> di laptop Anda."
             )
-            bot.edit_message_text(text, call.message.chat.id, call.message.message_id, parse_mode="HTML")
+            markup = types.InlineKeyboardMarkup()
+            markup.add(types.InlineKeyboardButton("⬅️ Kembali ke Menu Logbook", callback_data="log_menu_back"))
+            bot.edit_message_text(text, call.message.chat.id, call.message.message_id, parse_mode="HTML", reply_markup=markup)
             return
 
-        # Ambil draft_id dari prefix callback
+        elif data == "log_menu_hapus":
+            bot.answer_callback_query(call.id)
+            user = get_user_by_chat_id(call.message.chat.id)
+            if not user:
+                markup = types.InlineKeyboardMarkup()
+                markup.add(types.InlineKeyboardButton("⬅️ Kembali ke Menu Logbook", callback_data="log_menu_back"))
+                bot.edit_message_text("ℹ️ Anda belum terdaftar di sistem logbook.", call.message.chat.id, call.message.message_id, reply_markup=markup)
+                return
+
+            text = (
+                f"⚠️ <b>Konfirmasi Hapus Akun Logbook</b>\n\n"
+                f"Apakah Anda yakin ingin menghapus kredensial DERMAGA akun <code>{user['username']}</code> dan API Token Anda dari bot?\n\n"
+                f"<i>Tindakan ini tidak dapat dibatalkan. Riwayat draf logbook lama Anda juga akan terhapus.</i>"
+            )
+            markup = types.InlineKeyboardMarkup(row_width=2)
+            btn_confirm = types.InlineKeyboardButton("⚠️ Ya, Hapus Akun", callback_data="log_confirm_hapus_akun")
+            btn_cancel = types.InlineKeyboardButton("❌ Batal", callback_data="log_menu_back")
+            markup.add(btn_confirm, btn_cancel)
+            bot.edit_message_text(text, call.message.chat.id, call.message.message_id, parse_mode="HTML", reply_markup=markup)
+            return
+
+        elif data == "log_confirm_hapus_akun":
+            bot.answer_callback_query(call.id)
+            user = get_user_by_chat_id(call.message.chat.id)
+            if user:
+                delete_user_credential(call.message.chat.id)
+                text = f"✅ Akun <code>{user['username']}</code> dan token Anda berhasil dihapus dari sistem bot."
+            else:
+                text = "ℹ️ Akun tidak ditemukan atau sudah dihapus."
+            markup = types.InlineKeyboardMarkup()
+            markup.add(types.InlineKeyboardButton("⬅️ Kembali ke Menu Logbook", callback_data="log_menu_back"))
+            bot.edit_message_text(text, call.message.chat.id, call.message.message_id, parse_mode="HTML", reply_markup=markup)
+            return
+
+        elif data == "log_menu_admin_users":
+            bot.answer_callback_query(call.id)
+            if not is_admin(call.from_user.id) and not (call.message and is_admin(call.message.chat.id)):
+                bot.answer_callback_query(call.id, "⛔ Akses ditolak. Hanya untuk Admin.", show_alert=True)
+                return
+
+            users = get_all_users()
+            markup = types.InlineKeyboardMarkup()
+            markup.add(types.InlineKeyboardButton("⬅️ Kembali ke Menu Logbook", callback_data="log_menu_back"))
+
+            if not users:
+                text = "👥 <b>Admin Panel Logbook</b>\n\n<i>Belum ada pengguna logbook yang terdaftar.</i>"
+            else:
+                text = f"👥 <b>Daftar Pengguna Logbook Terdaftar ({len(users)} User):</b>\n\n"
+                for u in users:
+                    status = "🟢 Aktif" if u['is_active'] else "🔴 Nonaktif"
+                    token_snippet = u['api_token'][:6] + "..." + u['api_token'][-4:]
+                    text += (
+                        f"• 👤 <b>{u['username']}</b>\n"
+                        f"  Chat ID: <code>{u['chat_id']}</code>\n"
+                        f"  Token: <code>{token_snippet}</code> | Status: {status}\n"
+                        f"  Terdaftar: <code>{u['created_at']}</code>\n\n"
+                    )
+            bot.edit_message_text(text, call.message.chat.id, call.message.message_id, parse_mode="HTML", reply_markup=markup)
+            return
+
+        # --- DRAFT CALLBACKS (SUBMIT / OVERRIDE / SKIP / EDIT / CANCEL) ---
         draft_id = None
         if data.startswith(('log_confirm_', 'log_skip_', 'log_edit_', 'log_cancel_')):
             draft_id = int(data.split('_')[2])

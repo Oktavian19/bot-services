@@ -442,6 +442,35 @@ class TestGitLogbookAutomation(unittest.TestCase):
         self.assertEqual(response_body['chat_id'], test_chat_id)
         self.assertEqual(response_body['status'], 'ok')
 
+    def test_14_logbook_menu_rendering_and_buttons(self):
+        """14. Render menu utama logbook dan tombol inline navigation."""
+        from modul.logbook import main as logbook_main
+
+        with patch.dict(os.environ, {"ADMIN_CHAT_ID": "9999999"}):
+            # 1. Unregistered user
+            unreg_chat_id = 88888
+            text_unreg, markup_unreg = logbook_main.render_logbook_menu(unreg_chat_id)
+            self.assertIn("Akun Anda belum terdaftar", text_unreg)
+            button_callbacks = [b.callback_data for row in markup_unreg.keyboard for b in row]
+            self.assertIn("log_menu_refresh", button_callbacks)
+
+            # 2. Registered non-admin user
+            reg_chat_id = 999001  # Dari setUpClass
+            text_reg, markup_reg = logbook_main.render_logbook_menu(reg_chat_id)
+            self.assertIn("tester_nim", text_reg)
+            callbacks_reg = [b.callback_data for row in markup_reg.keyboard for b in row]
+            self.assertIn("log_menu_cek", callbacks_reg)
+            self.assertIn("log_menu_token", callbacks_reg)
+            self.assertIn("log_menu_refresh", callbacks_reg)
+            self.assertIn("log_menu_hapus", callbacks_reg)
+            self.assertNotIn("log_menu_admin_users", callbacks_reg)
+
+        # 3. Admin user
+        with patch.dict(os.environ, {"ADMIN_CHAT_ID": "999001"}):
+            text_admin, markup_admin = logbook_main.render_logbook_menu(reg_chat_id)
+            callbacks_admin = [b.callback_data for row in markup_admin.keyboard for b in row]
+            self.assertIn("log_menu_admin_users", callbacks_admin)
+
 if __name__ == "__main__":
     unittest.main()
 

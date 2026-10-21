@@ -2,3 +2,5 @@ __pycache__/
 *.db
 .env.bot
 tools/logbook_cli/config.json
+tools/logbook_cli/*.service
+tools/logbook_cli/*.timer

@@ -8,6 +8,8 @@ import subprocess
 import hashlib
 import urllib.request
 import urllib.error
+import time
+import socket
 from pathlib import Path
 from datetime import datetime
 
@@ -287,6 +289,36 @@ def compute_idempotency_key(date_str: str, commits: list) -> str:
     raw = f"{date_str}|" + "|".join(sorted_signatures)
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
+def ensure_ssh_tunnel(config: dict) -> bool:
+    """
+    Jika vps_endpoint menggunakan localhost/127.0.0.1:8088 dan port belum aktif,
+    otomatis nyalakan SSH tunnel ke bot-azure di background.
+    """
+    endpoint = config.get("vps_endpoint", "")
+    if "8088" not in endpoint or ("127.0.0.1" not in endpoint and "localhost" not in endpoint):
+        return True
+
+    # Cek apakah port 8088 sudah listening lokal
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.settimeout(0.5)
+    try:
+        s.connect(("127.0.0.1", 8088))
+        s.close()
+        return True
+    except Exception:
+        pass
+
+    # Port belum aktif, coba nyalakan background tunnel otomatis
+    ssh_host = config.get("ssh_host", "bot-azure")
+    print(f"🔌 Port 8088 belum terbuka. Membuka SSH tunnel ke {ssh_host} otomatis...", file=sys.stderr)
+    try:
+        subprocess.run(["ssh", "-f", "-N", "-L", "8088:127.0.0.1:8088", ssh_host], check=True)
+        time.sleep(1.5)
+        return True
+    except Exception as e:
+        print(f"[WARN] Gagal membuka SSH tunnel otomatis: {e}", file=sys.stderr)
+        return False
+
 def send_payload_to_vps(payload: dict, config: dict) -> tuple:
     """Mengirim payload JSON ke endpoint VPS. Mengembalikan (success: bool, msg: str)."""
     endpoint = config.get("vps_endpoint")
@@ -294,6 +326,9 @@ def send_payload_to_vps(payload: dict, config: dict) -> tuple:
 
     if not endpoint:
         return False, "vps_endpoint belum dikonfigurasi"
+
+    # Pastikan SSH tunnel aktif jika mengarah ke port 8088 lokal
+    ensure_ssh_tunnel(config)
 
     body_bytes = json.dumps(payload).encode("utf-8")
     req = urllib.request.Request(

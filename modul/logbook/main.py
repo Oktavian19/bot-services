@@ -5,10 +5,11 @@ from telebot import types
 from datetime import datetime
 from .database import (
     setup_database, get_draft, update_draft_status, update_draft_summary,
-    update_telegram_message_info, get_recent_drafts, set_active_credential,
-    get_active_credential
+    update_telegram_message_info, get_recent_drafts, register_user_credential,
+    get_user_by_chat_id, get_user_credential, regenerate_api_token,
+    delete_user_credential, get_all_users
 )
-from .website import submit_logbook_to_dermaga, fetch_dermaga_table
+from .website import submit_logbook_to_dermaga, fetch_dermaga_table, test_dermaga_login
 from .server import run_http_server
 
 def get_admin_chat_id() -> str:
@@ -28,7 +29,6 @@ def check_message_admin(message) -> bool:
     if getattr(message, 'from_user', None) and is_admin(message.from_user.id):
         return True
     return False
-
 
 def format_draft_message(draft: dict) -> str:
     """Format tampilan pesan konfirmasi logbook ke Telegram HTML."""
@@ -84,31 +84,39 @@ def build_draft_keyboard(draft_id: int):
     return markup
 
 def send_draft_confirmation(bot, draft_id: int):
-    """Mengirim pesan konfirmasi draf baru ke Telegram Admin."""
-    admin_id_str = get_admin_chat_id()
-    if not admin_id_str:
-        print("[LOGBOOK - WARN] ADMIN_CHAT_ID belum diatur, notifikasi draf dilewati.")
-        return
-
-    admin_chat_id = int(admin_id_str) if admin_id_str.isdigit() else admin_id_str
-
+    """Mengirim pesan konfirmasi draf baru ke Telegram Pengguna terkait."""
     draft = get_draft(draft_id)
     if not draft:
+        return
+
+    chat_id = draft.get('chat_id')
+    if not chat_id:
+        admin_id_str = get_admin_chat_id()
+        chat_id = int(admin_id_str) if admin_id_str.isdigit() else admin_id_str
+
+    if not chat_id:
+        print(f"[LOGBOOK - WARN] Tidak ada target chat_id untuk draf #{draft_id}, notifikasi dilewati.")
         return
 
     text = format_draft_message(draft)
     markup = build_draft_keyboard(draft_id)
 
     try:
-        msg = bot.send_message(admin_chat_id, text, parse_mode="HTML", reply_markup=markup)
+        msg = bot.send_message(chat_id, text, parse_mode="HTML", reply_markup=markup)
         update_telegram_message_info(draft_id, msg.chat.id, msg.message_id)
-        print(f"[LOGBOOK] Pesan konfirmasi draf #{draft_id} terkirim ke Admin ({admin_chat_id}).")
+        print(f"[LOGBOOK] Pesan konfirmasi draf #{draft_id} terkirim ke User ({chat_id}).")
     except Exception as e:
-        print(f"[LOGBOOK - ERROR] Gagal mengirim pesan konfirmasi draf: {e}")
+        print(f"[LOGBOOK - ERROR] Gagal mengirim pesan konfirmasi draf #{draft_id} ke {chat_id}: {e}")
 
 def handle_edit_input(message, bot, draft_id: int):
     """Handler langkah berikutnya untuk menerima teks revisi ringkasan."""
-    if not check_message_admin(message):
+    draft = get_draft(draft_id)
+    if not draft:
+        bot.send_message(message.chat.id, "❌ Draf tidak ditemukan.")
+        return
+
+    if draft.get('chat_id') and message.chat.id != draft.get('chat_id') and not is_admin(message.chat.id):
+        bot.send_message(message.chat.id, "⛔ Akses ditolak. Ini bukan draf Anda.")
         return
 
     new_text = message.text.strip()
@@ -117,9 +125,9 @@ def handle_edit_input(message, bot, draft_id: int):
         return
 
     update_draft_summary(draft_id, new_text)
-    draft = get_draft(draft_id)
+    updated_draft = get_draft(draft_id)
 
-    text = format_draft_message(draft)
+    text = format_draft_message(updated_draft)
     markup = build_draft_keyboard(draft_id)
 
     bot.send_message(
@@ -132,26 +140,38 @@ def handle_edit_input(message, bot, draft_id: int):
 def init_logbook(bot):
     """Inisialisasi modul logbook, database, command Telegram, dan callback."""
     setup_database()
-    print("[+] Module Logbook: Database & services ready.")
+    print("[+] Module Logbook: Database & services ready (Multi-User enabled).")
 
     @bot.message_handler(commands=['logbook'])
     def cmd_logbook(message):
-        if not check_message_admin(message):
-            bot.send_message(message.chat.id, "⛔ Akses ditolak. Anda bukan admin bot.")
+        chat_id = message.chat.id
+        user_meta = get_user_by_chat_id(chat_id)
+        admin = check_message_admin(message)
+
+        if not user_meta and not admin:
+            text = (
+                "📖 <b>Pusat Kendali Logbook DERMAGA</b>\n\n"
+                "⚠️ <b>Akun Anda belum terdaftar.</b>\n\n"
+                "Untuk mulai menggunakan otomatisasi logbook harian, daftarkan akun DERMAGA Anda:\n"
+                "👉 <code>/daftar_logbook &lt;username&gt; &lt;password&gt;</code>\n\n"
+                "<i>Catatan: Pesan yang berisi password akan langsung dihapus otomatis oleh bot demi keamanan.</i>"
+            )
+            bot.send_message(chat_id, text, parse_mode="HTML")
             return
 
-        drafts = get_recent_drafts(limit=5)
-        user, _ = get_active_credential()
-        user_str = user if user else "Belum diatur"
+        drafts = get_recent_drafts(chat_id=chat_id, limit=5) if user_meta else []
+        username_str = user_meta['username'] if user_meta else "(Admin Mode)"
+        token_str = (user_meta['api_token'][:8] + "..." + user_meta['api_token'][-6:]) if (user_meta and user_meta.get('api_token')) else "-"
 
         text = (
             f"📖 <b>Pusat Kendali Logbook DERMAGA</b>\n"
-            f"👤 Akun login: <code>{user_str}</code>\n\n"
-            f"<b>Riwayat Draf Terakhir:</b>\n"
+            f"👤 Akun DERMAGA: <code>{username_str}</code>\n"
+            f"🔑 Token CLI: <code>{token_str}</code>\n\n"
+            f"<b>Riwayat Draf Anda Terakhir:</b>\n"
         )
 
         if not drafts:
-            text += "<i>Belum ada draf logbook tercatat.</i>"
+            text += "<i>Belum ada draf logbook tercatat untuk akun Anda.</i>\n"
         else:
             status_emojis = {
                 'pending': '⏳ Pending',
@@ -167,51 +187,21 @@ def init_logbook(bot):
 
         text += (
             f"\n💡 <b>Perintah pendukung:</b>\n"
-            f"• <code>/cek_logbook</code> untuk memverifikasi dan melihat data logbook langsung dari DERMAGA.\n"
-            f"• <code>/set_dermaga_auth &lt;username&gt; &lt;password&gt;</code> untuk update akun login."
+            f"• <code>/token_logbook</code> untuk melihat & menyalin API token lengkap untuk CLI.\n"
+            f"• <code>/cek_logbook</code> untuk melihat tabel logbook langsung dari portal DERMAGA.\n"
+            f"• <code>/daftar_logbook &lt;user&gt; &lt;pass&gt;</code> untuk memperbarui akun login.\n"
+            f"• <code>/hapus_akun_logbook</code> untuk menghapus akun Anda dari bot."
         )
 
-        bot.send_message(message.chat.id, text, parse_mode="HTML")
+        if admin:
+            total_users = len(get_all_users())
+            text += f"\n\n👑 <b>Admin Panel:</b>\n• Total Pengguna Terdaftar: <b>{total_users}</b>\n• <code>/admin_logbook</code> untuk daftar detail pengguna."
 
-    @bot.message_handler(commands=['cek_logbook'])
-    def cmd_cek_logbook(message):
-        if not check_message_admin(message):
-            bot.send_message(message.chat.id, "⛔ Akses ditolak.")
-            return
+        bot.send_message(chat_id, text, parse_mode="HTML")
 
-        loading = bot.send_message(message.chat.id, "⏳ <i>Sedang mengambil data tabel logbook dari DERMAGA...</i>", parse_mode="HTML")
-        try:
-            entries = fetch_dermaga_table()
-            if not entries:
-                bot.edit_message_text(
-                    "ℹ️ Belum ada entri logbook yang tercatat di tabel DERMAGA.",
-                    message.chat.id,
-                    loading.message_id
-                )
-                return
-
-            text = f"📋 <b>Daftar Logbook Tercatat di DERMAGA ({len(entries)} Entri):</b>\n\n"
-            for e in entries:
-                desc = html.escape(e['pekerjaan'])
-                if len(desc) > 200:
-                    desc = desc[:197] + "..."
-                text += (
-                    f"📅 <b>{e['tanggal_text']}</b> (ID: <code>#{e['web_id'] or '-'}</code>)\n"
-                    f"⏱️ <code>{e['jam']}</code> | Ket: <b>{e['keterangan']}</b> | Status: <b>{e['status_verif']}</b>\n"
-                    f"📝 <i>{desc}</i>\n\n"
-                )
-
-            bot.edit_message_text(text, message.chat.id, loading.message_id, parse_mode="HTML")
-        except Exception as err:
-            bot.edit_message_text(f"❌ Gagal mengambil data DERMAGA: {err}", message.chat.id, loading.message_id)
-
-    @bot.message_handler(commands=['set_dermaga_auth'])
-    def cmd_set_auth(message):
-        if not check_message_admin(message):
-            bot.send_message(message.chat.id, "⛔ Akses ditolak.")
-            return
-
-        # Hapus pesan sensitif dari obrolan
+    @bot.message_handler(commands=['daftar_logbook', 'login_logbook', 'set_dermaga_auth'])
+    def cmd_daftar_logbook(message):
+        # 1. Hapus pesan sensitif dari obrolan
         try:
             bot.delete_message(message.chat.id, message.message_id)
         except Exception:
@@ -219,33 +209,210 @@ def init_logbook(bot):
 
         parts = message.text.split()
         if len(parts) < 3:
-            bot.send_message(message.chat.id, "❌ Format salah. Gunakan: <code>/set_dermaga_auth &lt;username&gt; &lt;password&gt;</code>", parse_mode="HTML")
+            bot.send_message(
+                message.chat.id,
+                "❌ Format salah.\n"
+                "Gunakan: <code>/daftar_logbook &lt;username&gt; &lt;password&gt;</code>\n\n"
+                "<i>Contoh:</i> <code>/daftar_logbook 2341720117 Rahasia123</code>",
+                parse_mode="HTML"
+            )
             return
 
         username = parts[1].strip()
         password = parts[2].strip()
-        set_active_credential(username, password)
-        bot.send_message(message.chat.id, f"✅ Kredensial DERMAGA untuk akun <code>{username}</code> berhasil diperbarui dan dienkripsi.", parse_mode="HTML")
+
+        loading = bot.send_message(
+            message.chat.id,
+            f"⏳ <i>Sedang menguji autentikasi akun <code>{username}</code> ke portal DERMAGA...</i>",
+            parse_mode="HTML"
+        )
+
+        ok, msg = test_dermaga_login(username, password)
+        if not ok:
+            bot.edit_message_text(
+                f"❌ <b>Verifikasi DERMAGA Gagal!</b>\n\n{msg}\n\n"
+                f"Silakan periksa kembali username/NIM dan password Anda.",
+                message.chat.id,
+                loading.message_id,
+                parse_mode="HTML"
+            )
+            return
+
+        try:
+            token = register_user_credential(message.chat.id, username, password)
+            success_text = (
+                f"🎉 <b>Pendaftaran Logbook DERMAGA Berhasil!</b>\n\n"
+                f"👤 Akun: <code>{username}</code>\n"
+                f"🔑 <b>API Token CLI Anda:</b>\n"
+                f"<code>{token}</code>\n\n"
+                f"📋 <b>Konfigurasi di Laptop / CLI Anda:</b>\n"
+                f"Buka file <code>tools/logbook_cli/config.json</code> dan isi token di atas:\n"
+                f"<pre>"
+                f'{{\n'
+                f'  "server_url": "http://127.0.0.1:8088",\n'
+                f'  "api_token": "{token}"\n'
+                f'}}'
+                f"</pre>\n"
+                f"💡 <i>Token ini unik untuk Anda. Jika lupa, cek kapan saja dengan <code>/token_logbook</code>.</i>"
+            )
+            bot.edit_message_text(success_text, message.chat.id, loading.message_id, parse_mode="HTML")
+            print(f"[LOGBOOK] User {message.chat.id} ({username}) berhasil terdaftar/update.")
+        except Exception as e:
+            bot.edit_message_text(f"❌ Terjadi kesalahan saat menyimpan akun: {e}", message.chat.id, loading.message_id)
+
+    @bot.message_handler(commands=['token_logbook'])
+    def cmd_token_logbook(message):
+        user = get_user_by_chat_id(message.chat.id)
+        if not user:
+            bot.send_message(
+                message.chat.id,
+                "⚠️ Akun Anda belum terdaftar.\n"
+                "Gunakan <code>/daftar_logbook &lt;username&gt; &lt;password&gt;</code> untuk mendaftar.",
+                parse_mode="HTML"
+            )
+            return
+
+        token = user['api_token']
+        markup = types.InlineKeyboardMarkup()
+        markup.add(types.InlineKeyboardButton("🔄 Buat Ulang Token", callback_data="log_regen_token"))
+
+        text = (
+            f"🔑 <b>API Token CLI Logbook Anda</b>\n\n"
+            f"👤 Akun: <code>{user['username']}</code>\n"
+            f"Token:\n<code>{token}</code>\n\n"
+            f"Salin dan masukkan token di atas pada konfigurasi <code>tools/logbook_cli/config.json</code>."
+        )
+        bot.send_message(message.chat.id, text, parse_mode="HTML", reply_markup=markup)
+
+    @bot.message_handler(commands=['cek_logbook'])
+    def cmd_cek_logbook(message):
+        user = get_user_by_chat_id(message.chat.id)
+        if not user:
+            bot.send_message(
+                message.chat.id,
+                "⚠️ Akun DERMAGA Anda belum terdaftar di bot ini.\n"
+                "Silakan daftar terlebih dahulu menggunakan:\n"
+                "<code>/daftar_logbook &lt;username&gt; &lt;password&gt;</code>",
+                parse_mode="HTML"
+            )
+            return
+
+        loading = bot.send_message(message.chat.id, "⏳ <i>Sedang mengambil data tabel logbook dari DERMAGA...</i>", parse_mode="HTML")
+        try:
+            entries = fetch_dermaga_table(chat_id=message.chat.id)
+            if not entries:
+                bot.edit_message_text(
+                    "ℹ️ Belum ada entri logbook yang tercatat di tabel DERMAGA akun Anda.",
+                    message.chat.id,
+                    loading.message_id
+                )
+                return
+
+            text = f"📋 <b>Daftar Logbook DERMAGA ({len(entries)} Entri) - {user['username']}:</b>\n\n"
+            for e in entries[:10]:
+                desc = html.escape(e['pekerjaan'])
+                if len(desc) > 160:
+                    desc = desc[:157] + "..."
+                text += (
+                    f"📅 <b>{e['tanggal_text']}</b> (ID: <code>#{e['web_id'] or '-'}</code>)\n"
+                    f"⏱️ <code>{e['jam']}</code> | Ket: <b>{e['keterangan']}</b> | Status: <b>{e['status_verif']}</b>\n"
+                    f"📝 <i>{desc}</i>\n\n"
+                )
+
+            if len(entries) > 10:
+                text += f"<i>...dan {len(entries) - 10} entri lainnya di DERMAGA.</i>"
+
+            bot.edit_message_text(text, message.chat.id, loading.message_id, parse_mode="HTML")
+        except Exception as err:
+            bot.edit_message_text(f"❌ Gagal mengambil data DERMAGA: {err}", message.chat.id, loading.message_id)
+
+    @bot.message_handler(commands=['hapus_akun_logbook'])
+    def cmd_hapus_akun(message):
+        user = get_user_by_chat_id(message.chat.id)
+        if not user:
+            bot.send_message(message.chat.id, "ℹ️ Anda belum terdaftar di sistem logbook.")
+            return
+
+        delete_user_credential(message.chat.id)
+        bot.send_message(
+            message.chat.id,
+            f"✅ Kredensial dan API Token untuk akun <code>{user['username']}</code> telah dihapus dari sistem bot.",
+            parse_mode="HTML"
+        )
+
+    @bot.message_handler(commands=['admin_logbook'])
+    def cmd_admin_logbook(message):
+        if not check_message_admin(message):
+            bot.send_message(message.chat.id, "⛔ Akses ditolak. Hanya untuk Admin.")
+            return
+
+        users = get_all_users()
+        if not users:
+            bot.send_message(message.chat.id, "ℹ️ Belum ada pengguna logbook yang terdaftar.")
+            return
+
+        text = f"👥 <b>Daftar Pengguna Logbook Terdaftar ({len(users)} User):</b>\n\n"
+        for u in users:
+            status = "🟢 Aktif" if u['is_active'] else "🔴 Nonaktif"
+            token_snippet = u['api_token'][:6] + "..." + u['api_token'][-4:]
+            text += (
+                f"• 👤 <b>{u['username']}</b>\n"
+                f"  Chat ID: <code>{u['chat_id']}</code>\n"
+                f"  Token: <code>{token_snippet}</code> | Status: {status}\n"
+                f"  Terdaftar: <code>{u['created_at']}</code>\n\n"
+            )
+        bot.send_message(message.chat.id, text, parse_mode="HTML")
 
     @bot.callback_query_handler(func=lambda call: call.data.startswith('log_'))
     def callback_logbook(call):
-        is_authorized = is_admin(call.from_user.id) or (call.message and is_admin(call.message.chat.id))
-        if not is_authorized:
-            bot.answer_callback_query(call.id, "Akses ditolak.", show_alert=True)
+        data = call.data
+
+        # Handler khusus buat ulang token
+        if data == "log_regen_token":
+            bot.answer_callback_query(call.id)
+            user = get_user_by_chat_id(call.from_user.id)
+            if not user:
+                bot.send_message(call.message.chat.id, "❌ Akun tidak ditemukan.")
+                return
+
+            new_token = regenerate_api_token(call.from_user.id)
+            text = (
+                f"🔄 <b>API Token Berhasil Dibuat Ulang!</b>\n\n"
+                f"👤 Akun: <code>{user['username']}</code>\n"
+                f"Token Baru:\n<code>{new_token}</code>\n\n"
+                f"⚠️ Jangan lupa untuk memperbarui file <code>tools/logbook_cli/config.json</code> di laptop Anda."
+            )
+            bot.edit_message_text(text, call.message.chat.id, call.message.message_id, parse_mode="HTML")
             return
 
+        # Ambil draft_id dari prefix callback
+        draft_id = None
+        if data.startswith(('log_confirm_', 'log_skip_', 'log_edit_', 'log_cancel_')):
+            draft_id = int(data.split('_')[2])
+        elif data.startswith('log_over_'):
+            draft_id = int(data.split('_')[2])
+
+        if not draft_id:
+            bot.answer_callback_query(call.id, "Data callback tidak valid.", show_alert=True)
+            return
+
+        draft = get_draft(draft_id)
+        if not draft:
+            bot.answer_callback_query(call.id, "Draf tidak ditemukan.", show_alert=True)
+            return
+
+        # Cek otorisasi user: hanya pemilik draft atau bot admin yang diizinkan
+        is_owner = (draft.get('chat_id') and call.from_user.id == draft.get('chat_id'))
+        is_bot_admin = is_admin(call.from_user.id) or (call.message and is_admin(call.message.chat.id))
+
+        if not (is_owner or is_bot_admin):
+            bot.answer_callback_query(call.id, "⛔ Akses ditolak. Anda bukan pemilik draf ini.", show_alert=True)
+            return
 
         bot.answer_callback_query(call.id)
-        data = call.data
 
         # 1. Konfirmasi Submit
         if data.startswith('log_confirm_'):
-            draft_id = int(data.replace('log_confirm_', ''))
-            draft = get_draft(draft_id)
-            if not draft:
-                bot.send_message(call.message.chat.id, "❌ Draf tidak ditemukan.")
-                return
-
             bot.edit_message_reply_markup(call.message.chat.id, call.message.message_id, reply_markup=None)
             bot.send_message(call.message.chat.id, f"⏳ Sedang memproses submit logbook #{draft_id} ke DERMAGA...")
 
@@ -285,12 +452,7 @@ def init_logbook(bot):
         # 2. Timpa entri yang ada di website
         elif data.startswith('log_over_'):
             parts = data.split('_')
-            draft_id = int(parts[2])
             web_id = parts[3]
-            draft = get_draft(draft_id)
-            if not draft:
-                bot.send_message(call.message.chat.id, "❌ Draf tidak ditemukan.")
-                return
 
             bot.edit_message_reply_markup(call.message.chat.id, call.message.message_id, reply_markup=None)
             bot.send_message(call.message.chat.id, f"⏳ Sedang menimpa logbook ID <code>{web_id}</code> di DERMAGA...", parse_mode="HTML")
@@ -306,14 +468,12 @@ def init_logbook(bot):
 
         # 3. Biarkan entri lama (Skip)
         elif data.startswith('log_skip_'):
-            draft_id = int(data.replace('log_skip_', ''))
             bot.edit_message_reply_markup(call.message.chat.id, call.message.message_id, reply_markup=None)
             update_draft_status(draft_id, 'skipped')
             bot.send_message(call.message.chat.id, f"⏩ Draf logbook #{draft_id} ditandai selesai (dilewati). Data di DERMAGA tidak diubah.")
 
         # 4. Ubah draf
         elif data.startswith('log_edit_'):
-            draft_id = int(data.replace('log_edit_', ''))
             prompt_msg = bot.send_message(
                 call.message.chat.id,
                 f"✏️ <b>Edit Draf #{draft_id}</b>\nSilakan ketik atau tempel teks ringkasan logbook baru:",
@@ -323,7 +483,6 @@ def init_logbook(bot):
 
         # 5. Batalkan draf
         elif data.startswith('log_cancel_'):
-            draft_id = int(data.replace('log_cancel_', ''))
             update_draft_status(draft_id, 'cancelled')
             try:
                 bot.edit_message_reply_markup(call.message.chat.id, call.message.message_id, reply_markup=None)

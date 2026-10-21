@@ -2,7 +2,7 @@ import http.server
 import json
 import os
 import sys
-from .database import create_or_get_draft
+from .database import create_or_get_draft, get_user_by_token
 
 _on_draft_callback = None
 
@@ -19,7 +19,8 @@ class LogbookRequestHandler(http.server.BaseHTTPRequestHandler):
         if self.path == '/api/health':
             self.send_json_response(200, {
                 'status': 'healthy',
-                'service': 'bot-services-logbook'
+                'service': 'bot-services-logbook',
+                'multi_user': True
             })
         else:
             self.send_json_response(404, {'error': 'Not Found'})
@@ -29,19 +30,30 @@ class LogbookRequestHandler(http.server.BaseHTTPRequestHandler):
             self.send_json_response(404, {'error': 'Not Found'})
             return
 
-        # 1. Validasi Autentikasi Bearer Token
-        expected_token = os.environ.get('LOGBOOK_API_TOKEN')
+        # 1. Validasi Autentikasi Bearer Token Per-User
         auth_header = self.headers.get('Authorization', '')
-        
-        if not expected_token:
-            print("[LOGBOOK-API - WARNING] LOGBOOK_API_TOKEN belum dikonfigurasi di environment VPS!")
-            self.send_json_response(500, {'error': 'Server API token not configured'})
+        if not auth_header.startswith('Bearer '):
+            self.send_json_response(401, {'error': 'Unauthorized: Missing or invalid Bearer token header'})
             return
 
-        if not auth_header.startswith('Bearer ') or auth_header[7:].strip() != expected_token:
-            print("[LOGBOOK-API - WARN] Unauthorized request to /api/logbook")
-            self.send_json_response(401, {'error': 'Unauthorized: Invalid or missing Bearer token'})
+        token = auth_header[7:].strip()
+        user = get_user_by_token(token)
+
+        # Fallback ke admin jika menggunakan token master server
+        if not user:
+            admin_token = os.environ.get('LOGBOOK_API_TOKEN')
+            admin_chat = os.environ.get('ADMIN_CHAT_ID')
+            if admin_token and token == admin_token and admin_chat:
+                user = {'chat_id': int(admin_chat.strip("'\" "))}
+
+        if not user:
+            print(f"[LOGBOOK-API - WARN] Unauthorized request with unregistered token: {token[:8]}...")
+            self.send_json_response(401, {
+                'error': 'Unauthorized: Token API tidak terdaftar di sistem bot. Gunakan /daftar_logbook di Telegram untuk registrasi akun dan mendapatkan token.'
+            })
             return
+
+        chat_id = user['chat_id']
 
         # 2. Baca dan validasi ukuran payload
         try:
@@ -76,9 +88,10 @@ class LogbookRequestHandler(http.server.BaseHTTPRequestHandler):
         jam_masuk = str(payload.get('jam_masuk') or '07:10')
         jam_pulang = str(payload.get('jam_pulang') or '16:25')
 
-        # 4. Simpan ke database
+        # 4. Simpan ke database dengan asosiasi chat_id user
         try:
             draft, is_new = create_or_get_draft(
+                chat_id=chat_id,
                 idempotency_key=idempotency_key,
                 date=date_str,
                 projects=projects,
@@ -88,19 +101,20 @@ class LogbookRequestHandler(http.server.BaseHTTPRequestHandler):
                 jam_pulang=jam_pulang
             )
 
-            print(f"[LOGBOOK-API] Draf #{draft['id']} (is_new={is_new}) diterima dari remote client.")
+            print(f"[LOGBOOK-API] Draf #{draft['id']} (is_new={is_new}) diterima dari remote client untuk User {chat_id}.")
 
-            # Jika draf baru dan callback notifikasi terdaftar, kirim pesan Telegram
+            # Jika draf baru dan callback notifikasi terdaftar, kirim pesan Telegram ke chat_id user
             if is_new and _on_draft_callback:
                 try:
                     _on_draft_callback(draft)
                 except Exception as cb_err:
-                    print(f"[LOGBOOK-API - ERROR] Callback Telegram error: {cb_err}")
+                    print(f"[LOGBOOK-API - ERROR] Callback Telegram error untuk User {chat_id}: {cb_err}")
 
             status_code = 201 if is_new else 200
             self.send_json_response(status_code, {
                 'status': 'ok',
                 'draft_id': draft['id'],
+                'chat_id': chat_id,
                 'is_duplicate': not is_new,
                 'message': 'Draft processed successfully'
             })
@@ -122,5 +136,5 @@ def run_http_server(on_draft_cb=None, host: str = None, port: int = None):
 
     server_address = (bind_host, bind_port)
     httpd = http.server.ThreadingHTTPServer(server_address, LogbookRequestHandler)
-    print(f"[LOGBOOK-API] HTTP Receiver aktif di http://{bind_host}:{bind_port}/api/logbook")
+    print(f"[LOGBOOK-API] HTTP Receiver aktif di http://{bind_host}:{bind_port}/api/logbook (Multi-User Mode)")
     httpd.serve_forever()

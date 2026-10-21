@@ -24,6 +24,8 @@ class TestGitLogbookAutomation(unittest.TestCase):
         cls.db_file = os.path.join(cls.temp_dir, "test_logbook.db")
         database.DB_FILE = cls.db_file
         database.setup_database()
+        cls.test_chat_id = 999001
+        database.register_user_credential(cls.test_chat_id, "tester_nim", "TestPass123", api_token="TEST_TOKEN_API")
 
     @classmethod
     def tearDownClass(cls):
@@ -306,6 +308,139 @@ class TestGitLogbookAutomation(unittest.TestCase):
 
         finally:
             shutil.rmtree(parent_dir, ignore_errors=True)
+
+    def test_11_multiuser_registration_and_token_flow(self):
+        """11. Pendaftaran kredensial multi-user, enkripsi Fernet, dan token API."""
+        chat_user1 = 10001
+        chat_user2 = 10002
+
+        # User 1 daftar
+        token1 = database.register_user_credential(chat_user1, "nim_user1", "Password123")
+        self.assertTrue(len(token1) >= 32)
+
+        # User 2 daftar
+        token2 = database.register_user_credential(chat_user2, "nim_user2", "Password456")
+        self.assertTrue(len(token2) >= 32)
+        self.assertNotEqual(token1, token2)
+
+        # Lookup by token
+        u1 = database.get_user_by_token(token1)
+        self.assertIsNotNone(u1)
+        self.assertEqual(u1["chat_id"], chat_user1)
+        self.assertEqual(u1["username"], "nim_user1")
+
+        u2 = database.get_user_by_token(token2)
+        self.assertIsNotNone(u2)
+        self.assertEqual(u2["chat_id"], chat_user2)
+        self.assertEqual(u2["username"], "nim_user2")
+
+        # Decrypt credentials
+        user_cred1 = database.get_user_credential(chat_user1)
+        self.assertEqual(user_cred1, ("nim_user1", "Password123"))
+
+        # Regenerate token
+        new_token1 = database.regenerate_api_token(chat_user1)
+        self.assertNotEqual(token1, new_token1)
+        self.assertIsNone(database.get_user_by_token(token1))
+        self.assertIsNotNone(database.get_user_by_token(new_token1))
+
+        # Delete user
+        database.delete_user_credential(chat_user2)
+        self.assertIsNone(database.get_user_by_chat_id(chat_user2))
+        self.assertIsNone(database.get_user_by_token(token2))
+
+    def test_12_multiuser_draft_isolation(self):
+        """12. Draf terisolasi per user sesuai chat_id."""
+        chat_user1 = 20001
+        chat_user2 = 20002
+        database.register_user_credential(chat_user1, "u1", "p1")
+        database.register_user_credential(chat_user2, "u2", "p2")
+
+        d1, _ = database.create_or_get_draft(
+            chat_id=chat_user1,
+            idempotency_key="u1_key",
+            date="2026-10-21",
+            projects=["proj-u1"],
+            commits_summary="Summary u1",
+            raw_metadata=[]
+        )
+        d2, _ = database.create_or_get_draft(
+            chat_id=chat_user2,
+            idempotency_key="u2_key",
+            date="2026-10-21",
+            projects=["proj-u2"],
+            commits_summary="Summary u2",
+            raw_metadata=[]
+        )
+
+        user1_drafts = database.get_recent_drafts(chat_id=chat_user1)
+        user2_drafts = database.get_recent_drafts(chat_id=chat_user2)
+
+        user1_ids = [d["id"] for d in user1_drafts]
+        user2_ids = [d["id"] for d in user2_drafts]
+
+        self.assertIn(d1["id"], user1_ids)
+        self.assertNotIn(d2["id"], user1_ids)
+
+        self.assertIn(d2["id"], user2_ids)
+        self.assertNotIn(d1["id"], user2_ids)
+
+    def test_13_server_multiuser_bearer_token_auth(self):
+        """13. Server HTTP API memvalidasi Bearer Token per-user dengan benar."""
+        from io import BytesIO
+
+        # Daftarkan user untuk tes HTTP API
+        test_chat_id = 77701
+        token = database.register_user_credential(test_chat_id, "test_api_user", "pass123")
+
+        # 1. Request tanpa token -> 401
+        handler = server.LogbookRequestHandler.__new__(server.LogbookRequestHandler)
+        handler.headers = {}
+        handler.path = "/api/logbook"
+        handler.send_response = MagicMock()
+        handler.send_header = MagicMock()
+        handler.end_headers = MagicMock()
+        handler.wfile = BytesIO()
+        handler.do_POST()
+        handler.send_response.assert_called_with(401)
+
+        # 2. Request dengan token salah -> 401
+        handler = server.LogbookRequestHandler.__new__(server.LogbookRequestHandler)
+        handler.headers = {"Authorization": "Bearer TOKEN_SALAH_12345"}
+        handler.path = "/api/logbook"
+        handler.send_response = MagicMock()
+        handler.send_header = MagicMock()
+        handler.end_headers = MagicMock()
+        handler.wfile = BytesIO()
+        handler.do_POST()
+        handler.send_response.assert_called_with(401)
+
+        # 3. Request dengan token valid user -> 201
+        payload = json.dumps({
+            "date": "2026-10-21",
+            "projects": ["api-proj"],
+            "summary": "Fitur API Multiuser",
+            "idempotency_key": "api_test_idemp_key_1",
+            "commits": []
+        }).encode("utf-8")
+
+        handler = server.LogbookRequestHandler.__new__(server.LogbookRequestHandler)
+        handler.headers = {
+            "Authorization": f"Bearer {token}",
+            "Content-Length": str(len(payload))
+        }
+        handler.path = "/api/logbook"
+        handler.rfile = BytesIO(payload)
+        handler.send_response = MagicMock()
+        handler.send_header = MagicMock()
+        handler.end_headers = MagicMock()
+        handler.wfile = BytesIO()
+        handler.do_POST()
+        handler.send_response.assert_called_with(201)
+
+        response_body = json.loads(handler.wfile.getvalue().decode('utf-8'))
+        self.assertEqual(response_body['chat_id'], test_chat_id)
+        self.assertEqual(response_body['status'], 'ok')
 
 if __name__ == "__main__":
     unittest.main()

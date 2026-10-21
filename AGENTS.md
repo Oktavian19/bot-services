@@ -22,9 +22,9 @@ python main.py
 | `TELEGRAM_TOKEN` | `main.py` | Required, no fallback |
 | `MAGANG_SECRET_KEY` | `modul/magang/database.py` | Fernet key; required if magang module is used |
 | `ADMIN_CHAT_ID` | `modul/jaringan/main.py`, `modul/logbook/main.py` | Required for network alerts, speedtest guard, and logbook admin actions |
-| `LOGBOOK_API_TOKEN` | `modul/logbook/server.py` | Bearer token for local CLI to push daily logbook drafts |
 | `LOGBOOK_API_PORT` | `modul/logbook/server.py` | HTTP receiver port (default: 8088, bind to 127.0.0.1) |
 | `LOGBOOK_SECRET_KEY` | `modul/logbook/database.py` | Fernet key for encrypting DERMAGA credentials; falls back to `MAGANG_SECRET_KEY` |
+| `LOGBOOK_API_TOKEN` | `modul/logbook/server.py` | Optional fallback master token; users receive per-user API tokens on Telegram registration |
 
 ## Modules & registration
 

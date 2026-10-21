@@ -5,7 +5,7 @@ import urllib3.util.connection as urllib3_cn
 import requests
 from bs4 import BeautifulSoup
 from datetime import datetime
-from .database import get_active_credential
+from .database import get_user_credential, get_user_by_chat_id
 
 # --- PATCH FORCE IPV4 ---
 def allowed_gai_family():
@@ -22,15 +22,18 @@ HEADERS = {
     'Referer': LOGIN_URL
 }
 
-def get_authenticated_session(username: str = None, password: str = None):
+def get_authenticated_session(username: str = None, password: str = None, chat_id: int = None):
     """
     Melakukan login ke DERMAGA JTI dan mengembalikan requests.Session yang terautentikasi.
+    Mendukung pengambilan kredensial dinamis berdasarkan chat_id.
     """
+    if chat_id and (not username or not password):
+        user_cred = get_user_credential(chat_id)
+        if user_cred:
+            username, password = user_cred
+
     if not username or not password:
-        username, password = get_active_credential()
-    
-    if not username or not password:
-        raise ValueError("Kredensial DERMAGA tidak ditemukan di database.")
+        raise ValueError(f"Kredensial DERMAGA tidak ditemukan untuk User {chat_id or 'aktif'}. Silakan registrasi via /daftar_logbook.")
 
     session = requests.Session()
     session.headers.update(HEADERS)
@@ -68,6 +71,21 @@ def get_authenticated_session(username: str = None, password: str = None):
 
     return session
 
+def test_dermaga_login(username: str, password: str) -> tuple:
+    """
+    Menguji kredensial login DERMAGA secara live.
+    Mengembalikan (success: bool, message: str).
+    """
+    try:
+        get_authenticated_session(username=username, password=password)
+        return True, "Autentikasi DERMAGA berhasil."
+    except PermissionError as pe:
+        return False, str(pe)
+    except ConnectionError as ce:
+        return False, f"Koneksi gagal: {ce}"
+    except Exception as e:
+        return False, f"Terjadi kesalahan saat verifikasi: {e}"
+
 def check_monitoring_page(session, target_date: str):
     """
     Memeriksa halaman monitoring untuk mengecek apakah entri logbook target_date sudah ada.
@@ -103,12 +121,12 @@ def check_monitoring_page(session, target_date: str):
         'csrf_token': csrf_token
     }
 
-def fetch_dermaga_table():
+def fetch_dermaga_table(chat_id: int = None, username: str = None, password: str = None):
     """
-    Mengambil seluruh daftar logbook yang saat ini tercatat di tabel DERMAGA.
+    Mengambil seluruh daftar logbook yang saat ini tercatat di tabel DERMAGA milik akun pengguna.
     Mengembalikan list of dict entri logbook.
     """
-    session = get_authenticated_session()
+    session = get_authenticated_session(username=username, password=password, chat_id=chat_id)
     resp = session.get(MONITORING_URL, timeout=15)
     if resp.status_code != 200:
         raise ConnectionError(f"Gagal memuat monitoring (HTTP {resp.status_code})")
@@ -200,22 +218,24 @@ def extract_feedback_message(html_text: str) -> tuple:
 
 def submit_logbook_to_dermaga(draft_dict: dict, override_id: str = None, force: bool = False):
     """
-    Mengeksekusi pengisian logbook ke portal DERMAGA dengan verifikasi nyata ke tabel.
+    Mengeksekusi pengisian logbook ke portal DERMAGA dengan akun spesifik user dan verifikasi nyata.
     - Mengirim payload lengkap (keterangan, koordinat lokasi, jam kerja, deskripsi).
     - Memverifikasi secara langsung keberadaan baris pada tabel tblLogbook pasca submit.
     """
+    chat_id = draft_dict.get('chat_id')
     target_date = draft_dict.get('date', datetime.now().strftime('%Y-%m-%d'))
     summary = draft_dict.get('commits_summary', '')
     jam_masuk = draft_dict.get('jam_masuk') or '07:10'
     jam_pulang = draft_dict.get('jam_pulang') or '16:25'
 
-    # Koordinat default lokasi kerja (PT SAI Ngoro / Mojokerto / Jawa Timur)
-    default_lat = os.environ.get('DERMAGA_DEFAULT_LAT', '-7.5815')
-    default_lng = os.environ.get('DERMAGA_DEFAULT_LNG', '112.6247')
-    default_akurasi = os.environ.get('DERMAGA_DEFAULT_AKURASI', '15')
+    # Ambil metadata lokasi user jika ada, fallback ke default
+    user_meta = get_user_by_chat_id(chat_id) if chat_id else None
+    default_lat = (user_meta.get('default_lat') if user_meta else None) or os.environ.get('DERMAGA_DEFAULT_LAT', '-7.5815')
+    default_lng = (user_meta.get('default_lng') if user_meta else None) or os.environ.get('DERMAGA_DEFAULT_LNG', '112.6247')
+    default_akurasi = (user_meta.get('default_akurasi') if user_meta else None) or os.environ.get('DERMAGA_DEFAULT_AKURASI', '15')
 
     try:
-        session = get_authenticated_session()
+        session = get_authenticated_session(chat_id=chat_id)
         mon_info = check_monitoring_page(session, target_date)
 
         # Jika logbook hari ini sudah ada dan belum ada konfirmasi timpa/override
@@ -273,7 +293,7 @@ def submit_logbook_to_dermaga(draft_dict: dict, override_id: str = None, force: 
 
         entry = verify_check['existing_entry']
         web_id = entry.get('web_id') or payload['id'] or 'Tercatat'
-        print(f"[LOGBOOK-WEB] Sukses & Terverifikasi submit logbook tanggal {target_date} ke DERMAGA (ID: #{web_id}).")
+        print(f"[LOGBOOK-WEB] Sukses & Terverifikasi submit logbook tanggal {target_date} ke DERMAGA untuk User {chat_id} (ID: #{web_id}).")
         return {
             'status': 'SUCCESS',
             'web_id': web_id,
@@ -281,7 +301,7 @@ def submit_logbook_to_dermaga(draft_dict: dict, override_id: str = None, force: 
         }
 
     except Exception as e:
-        print(f"[LOGBOOK-WEB - ERROR] Gagal submit ke DERMAGA: {e}")
+        print(f"[LOGBOOK-WEB - ERROR] Gagal submit ke DERMAGA untuk User {chat_id}: {e}")
         return {
             'status': 'ERROR',
             'message': str(e)

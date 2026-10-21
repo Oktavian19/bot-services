@@ -8,7 +8,7 @@ from .database import (
     update_telegram_message_info, get_recent_drafts, set_active_credential,
     get_active_credential
 )
-from .website import submit_logbook_to_dermaga
+from .website import submit_logbook_to_dermaga, fetch_dermaga_table
 from .server import run_http_server
 
 def get_admin_chat_id() -> str:
@@ -167,10 +167,43 @@ def init_logbook(bot):
 
         text += (
             f"\n💡 <b>Perintah pendukung:</b>\n"
+            f"• <code>/cek_logbook</code> untuk memverifikasi dan melihat data logbook langsung dari DERMAGA.\n"
             f"• <code>/set_dermaga_auth &lt;username&gt; &lt;password&gt;</code> untuk update akun login."
         )
 
         bot.send_message(message.chat.id, text, parse_mode="HTML")
+
+    @bot.message_handler(commands=['cek_logbook'])
+    def cmd_cek_logbook(message):
+        if not check_message_admin(message):
+            bot.send_message(message.chat.id, "⛔ Akses ditolak.")
+            return
+
+        loading = bot.send_message(message.chat.id, "⏳ <i>Sedang mengambil data tabel logbook dari DERMAGA...</i>", parse_mode="HTML")
+        try:
+            entries = fetch_dermaga_table()
+            if not entries:
+                bot.edit_message_text(
+                    "ℹ️ Belum ada entri logbook yang tercatat di tabel DERMAGA.",
+                    message.chat.id,
+                    loading.message_id
+                )
+                return
+
+            text = f"📋 <b>Daftar Logbook Tercatat di DERMAGA ({len(entries)} Entri):</b>\n\n"
+            for e in entries:
+                desc = html.escape(e['pekerjaan'])
+                if len(desc) > 200:
+                    desc = desc[:197] + "..."
+                text += (
+                    f"📅 <b>{e['tanggal_text']}</b> (ID: <code>#{e['web_id'] or '-'}</code>)\n"
+                    f"⏱️ <code>{e['jam']}</code> | Ket: <b>{e['keterangan']}</b> | Status: <b>{e['status_verif']}</b>\n"
+                    f"📝 <i>{desc}</i>\n\n"
+                )
+
+            bot.edit_message_text(text, message.chat.id, loading.message_id, parse_mode="HTML")
+        except Exception as err:
+            bot.edit_message_text(f"❌ Gagal mengambil data DERMAGA: {err}", message.chat.id, loading.message_id)
 
     @bot.message_handler(commands=['set_dermaga_auth'])
     def cmd_set_auth(message):

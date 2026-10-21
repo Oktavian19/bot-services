@@ -1,3 +1,5 @@
+import os
+import re
 import socket
 import urllib3.util.connection as urllib3_cn
 import requests
@@ -101,17 +103,116 @@ def check_monitoring_page(session, target_date: str):
         'csrf_token': csrf_token
     }
 
+def fetch_dermaga_table():
+    """
+    Mengambil seluruh daftar logbook yang saat ini tercatat di tabel DERMAGA.
+    Mengembalikan list of dict entri logbook.
+    """
+    session = get_authenticated_session()
+    resp = session.get(MONITORING_URL, timeout=15)
+    if resp.status_code != 200:
+        raise ConnectionError(f"Gagal memuat monitoring (HTTP {resp.status_code})")
+
+    soup = BeautifulSoup(resp.text, 'html.parser')
+    tbl = soup.find(id='tblLogbook')
+    if not tbl:
+        return []
+
+    entries = []
+    tbody = tbl.find('tbody')
+    if not tbody:
+        return []
+
+    for tr in tbody.find_all('tr'):
+        tds = tr.find_all('td')
+        if len(tds) < 8:
+            continue
+        
+        tgl_cell = tds[0]
+        tgl_order = tgl_cell.get('data-order') or ''
+        tgl_text = " ".join(tgl_cell.stripped_strings)
+
+        keterangan = tds[2].get_text(strip=True)
+        jam_masuk = tds[3].get_text(strip=True)
+        jam_pulang = tds[4].get_text(strip=True)
+        pekerjaan = tds[5].get_text(strip=True)
+        status_verif = tds[7].get_text(strip=True)
+
+        btn_edit = tr.find(class_='btn-edit')
+        web_id = btn_edit.get('data-id') if btn_edit else None
+
+        entries.append({
+            'web_id': web_id,
+            'tanggal_iso': tgl_order,
+            'tanggal_text': tgl_text,
+            'keterangan': keterangan,
+            'jam': f"{jam_masuk} - {jam_pulang}",
+            'pekerjaan': pekerjaan,
+            'status_verif': status_verif
+        })
+
+    return entries
+
+def extract_feedback_message(html_text: str) -> tuple:
+    """
+    Mengekstrak pesan feedback/notifikasi dari respons HTML DERMAGA:
+    Mengembalikan (is_success: bool|None, message: str).
+    """
+    if not html_text:
+        return None, ""
+
+    if not isinstance(html_text, (str, bytes)):
+        html_text = str(html_text)
+
+    soup = BeautifulSoup(html_text, 'html.parser')
+
+    # 1. Cek notifikasi script SweetAlert atau notify()
+    for s in soup.find_all('script'):
+        txt = s.string or s.text or ''
+        if 'notify(' in txt:
+            if "notify('success'" in txt or 'notify("success"' in txt:
+                m = re.search(r'notify\(\s*[\'"]success[\'"]\s*,\s*[\'"]([^\'"]+)[\'"]', txt)
+                return True, m.group(1) if m else "Logbook berhasil disimpan."
+            elif "notify('error'" in txt or 'notify("error"' in txt or "notify('warning'" in txt:
+                m = re.search(r'notify\(\s*[\'"][^\'"]+[\'"]\s*,\s*[\'"]([^\'"]+)[\'"]', txt)
+                return False, m.group(1) if m else "Gagal menyimpan logbook."
+
+        if 'Swal.fire' in txt:
+            m_icon = re.search(r'icon:\s*[\'"]([^\'"]+)[\'"]', txt)
+            m_title = re.search(r'title:\s*[\'"]([^\'"]+)[\'"]', txt)
+            m_html = re.search(r'html:\s*[\'"]([^\'"]+)[\'"]', txt)
+            icon = m_icon.group(1) if m_icon else "warning"
+            title = m_title.group(1) if m_title else "Peringatan"
+            detail = m_html.group(1) if m_html else ""
+            clean_detail = re.sub(r'<[^>]+>', ' ', detail).strip()
+            msg = f"{title}: {clean_detail}" if clean_detail else title
+            return (False if icon in ['warning', 'error'] else True), msg
+
+    # 2. Cek elemen alert HTML biasa
+    for alert in soup.find_all(class_=lambda c: c and ('alert-danger' in c or 'alert-warning' in c)):
+        classes = alert.get('class', [])
+        if 'd-none' not in classes:
+            txt = alert.get_text(strip=True)
+            if txt:
+                return False, txt
+
+    return None, ""
+
 def submit_logbook_to_dermaga(draft_dict: dict, override_id: str = None, force: bool = False):
     """
-    Mengeksekusi pengisian logbook ke portal DERMAGA.
-    - Jika entri hari ini sudah ada dan override_id is None serta not force:
-      mengembalikan status 'EXISTS' dan informasi entri lama agar pengguna dapat memilih di Telegram.
-    - Jika submit berhasil: mengembalikan status 'SUCCESS'.
+    Mengeksekusi pengisian logbook ke portal DERMAGA dengan verifikasi nyata ke tabel.
+    - Mengirim payload lengkap (keterangan, koordinat lokasi, jam kerja, deskripsi).
+    - Memverifikasi secara langsung keberadaan baris pada tabel tblLogbook pasca submit.
     """
     target_date = draft_dict.get('date', datetime.now().strftime('%Y-%m-%d'))
     summary = draft_dict.get('commits_summary', '')
     jam_masuk = draft_dict.get('jam_masuk') or '07:10'
     jam_pulang = draft_dict.get('jam_pulang') or '16:25'
+
+    # Koordinat default lokasi kerja (PT SAI Ngoro / Mojokerto / Jawa Timur)
+    default_lat = os.environ.get('DERMAGA_DEFAULT_LAT', '-7.5815')
+    default_lng = os.environ.get('DERMAGA_DEFAULT_LNG', '112.6247')
+    default_akurasi = os.environ.get('DERMAGA_DEFAULT_AKURASI', '15')
 
     try:
         session = get_authenticated_session()
@@ -126,15 +227,19 @@ def submit_logbook_to_dermaga(draft_dict: dict, override_id: str = None, force: 
                 'message': f"Logbook untuk tanggal {target_date} sudah ada di DERMAGA (ID: {mon_info['existing_entry']['web_id']})."
             }
 
-        csrf_token = mon_info['csrf_token']
+        csrf_token = mon_info.get('csrf_token')
         if not csrf_token:
-            # Fallback ambil csrf dari halaman monitoring
-            soup = BeautifulSoup(session.get(MONITORING_URL).text, 'html.parser')
-            csrf_token = soup.find('input', {'name': 'csrf_test_name'})['value']
+            soup = BeautifulSoup(session.get(MONITORING_URL, timeout=15).text, 'html.parser')
+            csrf_input = soup.find('input', {'name': 'csrf_test_name'})
+            csrf_token = csrf_input['value'] if csrf_input else ''
 
         payload = {
             'csrf_test_name': csrf_token,
-            'id': override_id if override_id else (mon_info['existing_entry']['web_id'] if force and mon_info['exists'] else ''),
+            'id': override_id if override_id else (mon_info['existing_entry']['web_id'] if (force and mon_info['exists']) else ''),
+            'keterangan': 'hadir',
+            'latitude': default_lat,
+            'longitude': default_lng,
+            'akurasi': default_akurasi,
             'jam_masuk': jam_masuk,
             'jam_pulang': jam_pulang,
             'deskripsi': summary
@@ -149,10 +254,30 @@ def submit_logbook_to_dermaga(draft_dict: dict, override_id: str = None, force: 
                 'message': f"Server DERMAGA merespons dengan HTTP {resp_submit.status_code}"
             }
 
-        print(f"[LOGBOOK-WEB] Sukses submit logbook tanggal {target_date} ke DERMAGA.")
+        # Periksa respon feedback (misal alert / Swal warning dari backend)
+        is_success, feedback_msg = extract_feedback_message(resp_submit.text)
+        if is_success is False:
+            return {
+                'status': 'FAILED',
+                'message': f"DERMAGA menolak penyimpanan: {feedback_msg}"
+            }
+
+        # Verifikasi nyata: periksa ulang keberadaan baris pada tabel tblLogbook
+        verify_check = check_monitoring_page(session, target_date)
+        if not verify_check['exists']:
+            msg = feedback_msg or "Entri logbook tidak ditemukan di tabel setelah proses simpan."
+            return {
+                'status': 'FAILED',
+                'message': f"Verifikasi gagal: {msg}"
+            }
+
+        entry = verify_check['existing_entry']
+        web_id = entry.get('web_id') or payload['id'] or 'Tercatat'
+        print(f"[LOGBOOK-WEB] Sukses & Terverifikasi submit logbook tanggal {target_date} ke DERMAGA (ID: #{web_id}).")
         return {
             'status': 'SUCCESS',
-            'message': f"Logbook berhasil disimpan ke DERMAGA (ID: {payload['id'] or 'Baru'})."
+            'web_id': web_id,
+            'message': f"Logbook tanggal {target_date} terverifikasi berhasil tersimpan di tabel DERMAGA (ID: #{web_id})."
         }
 
     except Exception as e:

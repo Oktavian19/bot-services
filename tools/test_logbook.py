@@ -239,6 +239,7 @@ class TestGitLogbookAutomation(unittest.TestCase):
             # Jika admin mengonfirmasi override_id -> Baru dieksekusi submit
             mock_post = MagicMock()
             mock_post.status_code = 200
+            mock_post.text = "<script>notify('success', 'Logbook berhasil disimpan');</script>"
             mock_session.return_value.post.return_value = mock_post
             res_override = website.submit_logbook_to_dermaga(draft, override_id="777")
             self.assertEqual(res_override["status"], "SUCCESS")

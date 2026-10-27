@@ -58,6 +58,7 @@ python main.py
 | `TELEGRAM_TOKEN` | Yes | `main.py` | Telegram bot token from [@BotFather](https://t.me/BotFather) |
 | `ADMIN_CHAT_ID` | Yes | `modul/jaringan/main.py`, `modul/logbook/main.py` | Telegram chat ID for downtime alerts, speedtest guard, and logbook admin actions |
 | `LOGBOOK_API_PORT` | No (default: 8088) | `modul/logbook/server.py` | HTTP receiver port bound to `127.0.0.1` for receiving logbook drafts |
+| `LOGBOOK_PUBLIC_URL` | No | `modul/logbook/main.py` | Public HTTPS URL (e.g. `https://logbook.domain.com/api/logbook`) shown in Telegram setup snippets |
 | `LOGBOOK_SECRET_KEY` | No (fallback) | `modul/logbook/database.py` | Fernet key for encrypting DERMAGA credentials; falls back to `MAGANG_SECRET_KEY` |
 | `LOGBOOK_API_TOKEN` | No | `modul/logbook/server.py` | Optional fallback master token (users normally use individual tokens generated via Telegram) |
 | `MAGANG_SECRET_KEY` | If using magang | `modul/magang/database.py` | Fernet key for encrypting stored credentials in magang module |

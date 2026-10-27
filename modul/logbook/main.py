@@ -16,6 +16,10 @@ def get_admin_chat_id() -> str:
     raw = os.environ.get('ADMIN_CHAT_ID', '')
     return raw.strip("'\" ")
 
+def get_logbook_public_url() -> str:
+    raw = os.environ.get('LOGBOOK_PUBLIC_URL', 'http://127.0.0.1:8088/api/logbook')
+    return raw.strip("'\" ")
+
 def is_admin(chat_or_user_id) -> bool:
     admin_id = get_admin_chat_id()
     if not admin_id:
@@ -264,7 +268,7 @@ def init_logbook(bot):
                 f"Ekstrak ZIP, salin file <code>config.example.json</code> menjadi <code>config.json</code>, lalu sesuaikan field <code>api_token</code>:\n"
                 f"<pre>"
                 f'{{\n'
-                f'  "vps_endpoint": "http://127.0.0.1:8088/api/logbook",\n'
+                f'  "vps_endpoint": "{get_logbook_public_url()}",\n'
                 f'  "api_token": "{token}"\n'
                 f'}}'
                 f"</pre>\n"
@@ -304,7 +308,7 @@ def init_logbook(bot):
             f"Ekstrak ZIP, salin file <code>config.example.json</code> menjadi <code>config.json</code>, lalu sesuaikan field <code>api_token</code>:\n"
             f"<pre>"
             f'{{\n'
-            f'  "vps_endpoint": "http://127.0.0.1:8088/api/logbook",\n'
+            f'  "vps_endpoint": "{get_logbook_public_url()}",\n'
             f'  "api_token": "{token}"\n'
             f'}}'
             f"</pre>"
@@ -474,7 +478,7 @@ def init_logbook(bot):
                 f"Ekstrak ZIP, salin file <code>config.example.json</code> menjadi <code>config.json</code>, lalu sesuaikan field <code>api_token</code>:\n"
                 f"<pre>"
                 f'{{\n'
-                f'  "vps_endpoint": "http://127.0.0.1:8088/api/logbook",\n'
+                f'  "vps_endpoint": "{get_logbook_public_url()}",\n'
                 f'  "api_token": "{token_val}"\n'
                 f'}}'
                 f"</pre>"

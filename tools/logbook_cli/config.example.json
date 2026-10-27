@@ -1,5 +1,5 @@
 {
-  "vps_endpoint": "http://127.0.0.1:8088/api/logbook",
+  "vps_endpoint": "https://logbook.domainanda.com/api/logbook",
   "api_token": "ganti-dengan-LOGBOOK_API_TOKEN-anda",
   "openai_api_key": "sk-...",
   "openai_base_url": "https://api.openai.com/v1",

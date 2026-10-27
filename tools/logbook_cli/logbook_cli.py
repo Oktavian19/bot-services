@@ -469,52 +469,62 @@ def cmd_scan(args, config):
 # --- INTERACTIVE TERMINAL MENU (TUI) ---
 
 def read_key() -> str:
-    """Membaca satu input tombol keyboard secara cross-platform (Windows & Unix)."""
+    """Membaca satu input tombol keyboard secara unbuffered cross-platform (Windows & Unix)."""
     if os.name == 'nt':
         import msvcrt
         ch = msvcrt.getch()
         if ch in (b'\x00', b'\xe0'):
             code = msvcrt.getch()
-            if code == b'H':
+            if code in (b'H', b'K'):  # Up or Left
                 return 'UP'
-            elif code == b'P':
+            elif code in (b'P', b'M'): # Down or Right
                 return 'DOWN'
             return 'OTHER'
         elif ch in (b'\r', b'\n'):
             return 'ENTER'
         elif ch == b'\x03':  # Ctrl+C
             raise KeyboardInterrupt
-        elif ch == b'\x1b':  # ESC
-            return 'ESC'
+        elif ch in (b'q', b'Q'):
+            return 'QUIT'
+        elif ch in (b'k', b'K'):
+            return 'UP'
+        elif ch in (b'j', b'J'):
+            return 'DOWN'
         try:
-            return ch.decode('utf-8', errors='ignore')
+            decoded = ch.decode('utf-8', errors='ignore').strip()
+            if decoded in ('1', '2', '3', '4', '5', '6'):
+                return decoded
+            return decoded
         except Exception:
             return ''
     else:
         import tty
         import termios
-        import select
         fd = sys.stdin.fileno()
         old_settings = termios.tcgetattr(fd)
         try:
-            tty.setraw(fd)
-            ch = sys.stdin.read(1)
-            if ch == '\x1b':
-                r, _, _ = select.select([sys.stdin], [], [], 0.05)
-                if r:
-                    ch2 = sys.stdin.read(1)
-                    if ch2 == '[':
-                        ch3 = sys.stdin.read(1)
-                        if ch3 == 'A':
-                            return 'UP'
-                        elif ch3 == 'B':
-                            return 'DOWN'
-                return 'ESC'
-            elif ch in ('\r', '\n'):
+            tty.setcbreak(fd)
+            # Baca langsung byte mentah dari file descriptor tanpa buffering Python TextIOWrapper
+            b = os.read(fd, 8)
+            if b in (b'\x1b[A', b'\x1bOA') or b in (b'k', b'K'):
+                return 'UP'
+            elif b in (b'\x1b[B', b'\x1bOB') or b in (b'j', b'J'):
+                return 'DOWN'
+            elif b in (b'\r', b'\n'):
                 return 'ENTER'
-            elif ch == '\x03':  # Ctrl+C
+            elif b in (b'q', b'Q'):
+                return 'QUIT'
+            elif b == b'\x03':  # Ctrl+C
                 raise KeyboardInterrupt
-            return ch
+            elif b == b'\x1b':  # standalone ESC
+                return 'ESC'
+            try:
+                decoded = b.decode('utf-8', errors='ignore').strip()
+                if decoded in ('1', '2', '3', '4', '5', '6'):
+                    return decoded
+                return decoded
+            except Exception:
+                return ''
         finally:
             termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
 
@@ -540,7 +550,7 @@ def run_interactive_menu(config: dict):
         print("┌────────────────────────────────────────────────────────┐")
         print("│            🚀 Git Logbook Automation CLI               │")
         print("└────────────────────────────────────────────────────────┘")
-        print("Gunakan tombol panah [↑ / ↓] atau nomor [1-6], tekan [Enter]:\n")
+        print("Gunakan panah [↑ / ↓] atau ketik nomor [1-6], tekan [Enter] untuk memilih:\n")
 
         for idx, (label, _) in enumerate(options):
             if idx == selected_index:
@@ -559,7 +569,7 @@ def run_interactive_menu(config: dict):
                 print("\n\n👋 Keluar dari Logbook CLI.")
                 return
             except Exception:
-                # Fallback sederhana jika raw mode terminal tidak didukung
+                # Fallback sederhana jika cbreak mode terminal tidak didukung
                 try:
                     choice = input("\nPilih nomor [1-6]: ").strip()
                     if choice in ('1', '2', '3', '4', '5', '6'):
@@ -581,7 +591,7 @@ def run_interactive_menu(config: dict):
                 break
             elif key in ('1', '2', '3', '4', '5', '6'):
                 selected_index = int(key) - 1
-                key = 'ENTER'
+                # Sorot kursor ke nomor tersebut dan render ulang (menunggu Enter)
                 break
             elif key == 'ENTER':
                 break

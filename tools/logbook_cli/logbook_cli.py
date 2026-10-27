@@ -9,6 +9,7 @@ import hashlib
 import urllib.request
 import urllib.error
 import time
+import ssl
 from pathlib import Path
 from datetime import datetime
 
@@ -30,6 +31,7 @@ def load_config(config_path: Path = DEFAULT_CONFIG_PATH) -> dict:
         "custom_prompt": os.environ.get("LOGBOOK_CUSTOM_PROMPT", ""),
         "jam_masuk": os.environ.get("LOGBOOK_JAM_MASUK", "07:10"),
         "jam_pulang": os.environ.get("LOGBOOK_JAM_PULANG", "16:25"),
+        "verify_ssl": os.environ.get("LOGBOOK_VERIFY_SSL", "true").lower() in ("true", "1", "yes"),
         "repositories": {}
     }
 
@@ -39,7 +41,7 @@ def load_config(config_path: Path = DEFAULT_CONFIG_PATH) -> dict:
             with open(config_path, "r", encoding="utf-8") as f:
                 file_cfg = json.load(f)
                 for k, v in file_cfg.items():
-                    if v:
+                    if v is not None:
                         config[k] = v
         except Exception as e:
             print(f"[WARN] Gagal membaca {config_path}: {e}", file=sys.stderr)
@@ -293,10 +295,43 @@ def compute_idempotency_key(date_str: str, commits: list) -> str:
     raw = f"{date_str}|" + "|".join(sorted_signatures)
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
+def get_ssl_context(verify: bool = True) -> ssl.SSLContext:
+    """Membuat SSL context yang resilien dengan auto-discovery root CA atau opsi insecure."""
+    if not verify:
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        return ctx
+
+    # 1. Coba certifi jika tersedia
+    try:
+        import certifi
+        return ssl.create_default_context(cafile=certifi.where())
+    except Exception:
+        pass
+
+    # 2. Coba path CA bundle sistem Linux yang umum
+    ca_paths = [
+        "/etc/ssl/certs/ca-certificates.crt",                  # Debian/Ubuntu
+        "/etc/pki/tls/certs/ca-bundle.crt",                    # CentOS/RHEL/Fedora
+        "/etc/ssl/ca-bundle.pem",                              # OpenSUSE
+        "/etc/ssl/cert.pem",                                  # Alpine/Arch/macOS
+        "/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem",  # RHEL modern
+    ]
+    for ca in ca_paths:
+        if os.path.isfile(ca):
+            try:
+                return ssl.create_default_context(cafile=ca)
+            except Exception:
+                pass
+
+    return ssl.create_default_context()
+
 def send_payload_to_vps(payload: dict, config: dict) -> tuple:
     """Mengirim payload JSON ke endpoint VPS. Mengembalikan (success: bool, msg: str)."""
     endpoint = config.get("vps_endpoint")
     token = config.get("api_token")
+    verify_ssl = config.get("verify_ssl", True)
 
     if not endpoint:
         return False, "vps_endpoint belum dikonfigurasi"
@@ -311,8 +346,10 @@ def send_payload_to_vps(payload: dict, config: dict) -> tuple:
         }
     )
 
+    ctx = get_ssl_context(verify=verify_ssl)
+
     try:
-        with urllib.request.urlopen(req, timeout=15) as resp:
+        with urllib.request.urlopen(req, timeout=15, context=ctx) as resp:
             resp_body = json.loads(resp.read().decode("utf-8"))
             return True, resp_body.get("message", "OK")
     except urllib.error.HTTPError as he:
@@ -431,6 +468,7 @@ def cmd_scan(args, config):
 def main():
     base_parser = argparse.ArgumentParser(add_help=False)
     base_parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG_PATH, help="Path ke file konfigurasi json")
+    base_parser.add_argument("--insecure", action="store_true", help="Abaikan verifikasi sertifikat SSL")
 
     parser = argparse.ArgumentParser(description="Git Logbook Automation CLI", parents=[base_parser])
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -453,6 +491,8 @@ def main():
 
     args = parser.parse_args()
     config = load_config(args.config)
+    if getattr(args, "insecure", False):
+        config["verify_ssl"] = False
 
     if args.command == "scan":
         cmd_scan(args, config)

@@ -1,52 +1,71 @@
 # Git Logbook Automation CLI
 
-Script mandiri berbasis Python standard library untuk membaca commit Git lokal, membuat ringkasan logbook naratif (OpenAI / non-AI), dan mengirimkannya ke bot VPS `bot-services` via HTTP POST idempoten.
+Script mandiri dan executable untuk membaca commit Git lokal, membuat ringkasan logbook naratif (OpenAI / non-AI), dan mengirimkannya ke bot VPS `bot-services` via HTTP POST idempoten.
+
+---
+
+## 📦 Unduh Binary Siap Pakai (Tanpa Install Python)
+
+Anda bisa mengunduh file ZIP siap pakai langsung dari GitHub Releases:
+- 🪟 **Windows (x64)**: [logbook-cli-windows-x64.zip](https://github.com/Oktavian19/bot-services/releases/download/cli-latest/logbook-cli-windows-x64.zip)
+- 🐧 **Linux (x64)**: [logbook-cli-linux-x64.zip](https://github.com/Oktavian19/bot-services/releases/download/cli-latest/logbook-cli-linux-x64.zip)
+
+Setelah di-ekstrak, file executable (`logbook_cli.exe` atau `logbook_cli`) dapat langsung dijalankan tanpa perlu menginstal Python atau pustaka tambahan apapun.
 
 ---
 
 ## 1. Setup Konfigurasi
 
 Salin template `config.example.json` menjadi `config.json`:
-```bash
-cp tools/logbook_cli/config.example.json tools/logbook_cli/config.json
-```
+- **Linux/macOS**: `cp config.example.json config.json`
+- **Windows (PowerShell)**: `Copy-Item config.example.json config.json`
+
 Sesuaikan isi `config.json`:
 - `vps_endpoint`: URL endpoint VPS (misal `http://127.0.0.1:8088/api/logbook` atau domain HTTPS VPS Anda).
-- `api_token`: Token autentikasi yang sama dengan `LOGBOOK_API_TOKEN` di environment VPS.
+- `api_token`: Token autentikasi unik Anda (dapatkan via bot Telegram di menu `/token_logbook` atau `/daftar_logbook`).
 - `openai_api_key`: API key OpenAI (opsional, jika kosong akan otomatis menggunakan format ringkasan non-AI).
-- `repositories`: Pemetaan nama proyek ke path direktori git lokal di laptop. **Mendukung folder induk** (misal `"sai": "/home/oktavian/Project/sai"`), script akan otomatis memindai seluruh subfolder bersarang dan menamai proyek berdasarkan folder tingkat pertama di bawahnya.
+- `repositories`: Pemetaan nama proyek ke path direktori git lokal di laptop. **Mendukung folder induk** (misal `"sai": "/home/oktavian/Project/sai"`), program akan otomatis memindai seluruh subfolder bersarang dan menamai proyek berdasarkan folder tingkat pertama di bawahnya.
 
 ---
 
 ## 2. Penggunaan CLI
 
+> **Catatan**: Jika menggunakan file binary hasil ekstrak ZIP, gantikan perintah `python logbook_cli.py` dengan:
+> - **Windows**: `.\logbook_cli.exe <perintah>`
+> - **Linux**: `./logbook_cli <perintah>`
+
 ### A. Scan Repositori (Auto-Discovery)
 Melihat seluruh repositori Git yang terdeteksi beserta status commit hari ini:
 ```bash
-python tools/logbook_cli/logbook_cli.py scan
+# Binary Linux / Windows:
+./logbook_cli scan        # Linux
+.\logbook_cli.exe scan    # Windows
+
+# Skrip Python:
+python logbook_cli.py scan
 ```
 
 ### B. Preview (Tanpa kirim ke jaringan)
 Melihat daftar commit dan draf ringkasan di terminal:
 ```bash
-python tools/logbook_cli/logbook_cli.py preview --no-ai
+./logbook_cli preview --no-ai
 ```
 Atau untuk tanggal tertentu:
 ```bash
-python tools/logbook_cli/logbook_cli.py preview --date 2026-10-19
+./logbook_cli preview --date 2026-10-19
 ```
 
 ### C. Run (Kirim Draf ke VPS)
 Membaca commit hari ini dan mengirim draf ke Telegram bot di VPS:
 ```bash
-python tools/logbook_cli/logbook_cli.py run
+./logbook_cli run
 ```
-Jika tidak ada commit pada hari tersebut, script akan keluar dengan status informatif tanpa mengirim request ke VPS. Jika VPS sedang offline, payload otomatis disimpan di `pending_queue.db`.
+Jika tidak ada commit pada hari tersebut, program akan keluar dengan status informatif tanpa mengirim request ke VPS. Jika VPS sedang offline, payload otomatis disimpan di `pending_queue.db`.
 
 ### D. Send Pending (Coba Ulang Kirim)
 Mencoba mengirim ulang draf yang sebelumnya gagal terkirim karena masalah jaringan:
 ```bash
-python tools/logbook_cli/logbook_cli.py send-pending
+./logbook_cli send-pending
 ```
 
 

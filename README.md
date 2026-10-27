@@ -12,6 +12,19 @@ A multi-module Telegram bot that runs on a Debian server, providing network upti
 | **Bensin** (Fuel) | Register a motorcycle with initial & current odometer readings. Log fuel refills, view/edit/delete history, and get statistics (km/L). |
 | **Magang** (Internship) | *(Archived / Disabled)* Monitors student internship status by scraping `jti.polinema.ac.id/jtiportal`. See [`modul/magang/README.md`](modul/magang/README.md) to reactivate. |
 
+## Logbook CLI (Client Downloads)
+
+Bagi pengguna / rekan mahasiswa yang ingin menjalankan pemindai commit Git otomatis di laptop tanpa perlu mengklon seluruh repositori bot atau menginstal Python:
+
+[![Release](https://img.shields.io/badge/Release-cli--latest-brightgreen)](https://github.com/Oktavian19/bot-services/releases/tag/cli-latest)
+
+| Platform | Format | Link Unduhan |
+|---|---|---|
+| **Windows (x64)** | ZIP (`logbook_cli.exe` standalone) | [logbook-cli-windows-x64.zip](https://github.com/Oktavian19/bot-services/releases/download/cli-latest/logbook-cli-windows-x64.zip) |
+| **Linux (x64)** | ZIP (`logbook_cli` binary standalone) | [logbook-cli-linux-x64.zip](https://github.com/Oktavian19/bot-services/releases/download/cli-latest/logbook-cli-linux-x64.zip) |
+
+> 📖 Dokumentasi konfigurasi dan penjadwalan otomatis (Task Scheduler / systemd timer) tersedia lengkap di [`tools/logbook_cli/README.md`](tools/logbook_cli/README.md).
+
 ## Requirements
 
 - Python 3.8+

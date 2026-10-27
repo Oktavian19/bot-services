@@ -13,8 +13,13 @@ import socket
 from pathlib import Path
 from datetime import datetime
 
-DEFAULT_CONFIG_PATH = Path(__file__).resolve().parent / "config.json"
-QUEUE_DB_PATH = Path(__file__).resolve().parent / "pending_queue.db"
+if getattr(sys, "frozen", False):
+    BASE_DIR = Path(sys.executable).resolve().parent
+else:
+    BASE_DIR = Path(__file__).resolve().parent
+
+DEFAULT_CONFIG_PATH = BASE_DIR / "config.json"
+QUEUE_DB_PATH = BASE_DIR / "pending_queue.db"
 
 def load_config(config_path: Path = DEFAULT_CONFIG_PATH) -> dict:
     config = {

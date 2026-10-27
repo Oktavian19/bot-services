@@ -258,8 +258,10 @@ def init_logbook(bot):
                 f"👤 Akun: <code>{username}</code>\n"
                 f"🔑 <b>API Token CLI Anda:</b>\n"
                 f"<code>{token}</code>\n\n"
+                f"📦 <b>Download Logbook CLI:</b>\n"
+                f"• <a href=\"https://github.com/Oktavian19/bot-services/releases/download/cli-latest/logbook-cli-windows-x64.zip\">Windows (ZIP)</a> | <a href=\"https://github.com/Oktavian19/bot-services/releases/download/cli-latest/logbook-cli-linux-x64.zip\">Linux (ZIP)</a>\n\n"
                 f"📋 <b>Konfigurasi di Laptop / CLI Anda:</b>\n"
-                f"Buka file <code>tools/logbook_cli/config.json</code> dan sesuaikan field <code>api_token</code>:\n"
+                f"Ekstrak ZIP, salin file <code>config.example.json</code> menjadi <code>config.json</code>, lalu sesuaikan field <code>api_token</code>:\n"
                 f"<pre>"
                 f'{{\n'
                 f'  "vps_endpoint": "http://127.0.0.1:8088/api/logbook",\n'
@@ -296,8 +298,10 @@ def init_logbook(bot):
             f"🔑 <b>API Token CLI Logbook Anda</b>\n\n"
             f"👤 Akun: <code>{user['username']}</code>\n"
             f"Token:\n<code>{token}</code>\n\n"
+            f"📦 <b>Download Logbook CLI:</b>\n"
+            f"• <a href=\"https://github.com/Oktavian19/bot-services/releases/download/cli-latest/logbook-cli-windows-x64.zip\">Windows (ZIP)</a> | <a href=\"https://github.com/Oktavian19/bot-services/releases/download/cli-latest/logbook-cli-linux-x64.zip\">Linux (ZIP)</a>\n\n"
             f"📋 <b>Konfigurasi di Laptop:</b>\n"
-            f"Buka file <code>tools/logbook_cli/config.json</code> dan sesuaikan field <code>api_token</code>:\n"
+            f"Ekstrak ZIP, salin file <code>config.example.json</code> menjadi <code>config.json</code>, lalu sesuaikan field <code>api_token</code>:\n"
             f"<pre>"
             f'{{\n'
             f'  "vps_endpoint": "http://127.0.0.1:8088/api/logbook",\n'
@@ -464,8 +468,10 @@ def init_logbook(bot):
                 f"🔑 <b>API Token CLI Logbook Anda</b>\n\n"
                 f"👤 Akun: <code>{user['username']}</code>\n"
                 f"Token:\n<code>{token_val}</code>\n\n"
+                f"📦 <b>Download Logbook CLI:</b>\n"
+                f"• <a href=\"https://github.com/Oktavian19/bot-services/releases/download/cli-latest/logbook-cli-windows-x64.zip\">Windows (ZIP)</a> | <a href=\"https://github.com/Oktavian19/bot-services/releases/download/cli-latest/logbook-cli-linux-x64.zip\">Linux (ZIP)</a>\n\n"
                 f"📋 <b>Konfigurasi di Laptop:</b>\n"
-                f"Buka file <code>tools/logbook_cli/config.json</code> dan sesuaikan field <code>api_token</code>:\n"
+                f"Ekstrak ZIP, salin file <code>config.example.json</code> menjadi <code>config.json</code>, lalu sesuaikan field <code>api_token</code>:\n"
                 f"<pre>"
                 f'{{\n'
                 f'  "vps_endpoint": "http://127.0.0.1:8088/api/logbook",\n'
@@ -491,7 +497,7 @@ def init_logbook(bot):
                 f"🔄 <b>API Token Berhasil Dibuat Ulang!</b>\n\n"
                 f"👤 Akun: <code>{user['username']}</code>\n"
                 f"Token Baru:\n<code>{new_token}</code>\n\n"
-                f"⚠️ Jangan lupa untuk memperbarui field <code>api_token</code> pada <code>tools/logbook_cli/config.json</code> di laptop Anda."
+                f"⚠️ Jangan lupa untuk memperbarui field <code>api_token</code> pada file <code>config.json</code> di laptop Anda."
             )
             markup = types.InlineKeyboardMarkup()
             markup.add(types.InlineKeyboardButton("⬅️ Kembali ke Menu Logbook", callback_data="log_menu_back"))

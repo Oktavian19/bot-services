@@ -30,11 +30,25 @@ Sesuaikan isi `config.json`:
 
 ## 2. Penggunaan CLI
 
-> **Catatan**: Jika menggunakan file binary hasil ekstrak ZIP, gantikan perintah `python logbook_cli.py` dengan:
-> - **Windows**: `.\logbook_cli.exe <perintah>`
-> - **Linux**: `./logbook_cli <perintah>`
+### 🎮 Mode Menu Interaktif (TUI)
+Cukup jalankan executable atau skrip **tanpa argumen apapun**, program akan otomatis membuka menu terminal interaktif modern dengan navigasi panah keyboard `[↑ / ↓]` dan `[Enter]`:
+```bash
+./logbook_cli          # Linux binary
+.\logbook_cli.exe      # Windows binary (atau cukup klik dua kali pada file .exe)
+python logbook_cli.py  # Skrip Python
+```
+Menu ini menyediakan opsi langsung untuk:
+1. 🚀 **Jalankan & Kirim Logbook Hari Ini**
+2. 👁️ **Preview Logbook Hari Ini (Tanpa Kirim)**
+3. 🔍 **Scan Repositori Git Terdeteksi**
+4. 🔄 **Kirim Ulang Draf Tertunda (Send Pending)**
+5. 📅 **Jalankan untuk Tanggal Tertentu (Kustom)**
+6. ❌ **Keluar**
 
-### A. Scan Repositori (Auto-Discovery)
+---
+
+### ⚡ Mode Perintah Langsung (CLI / Otomasi / Cron)
+Jika ingin dijalankan otomatis oleh cron atau Task Scheduler, Anda bisa memberikan argumen sub-perintah langsung:
 Melihat seluruh repositori Git yang terdeteksi beserta status commit hari ini:
 ```bash
 # Binary Linux / Windows:

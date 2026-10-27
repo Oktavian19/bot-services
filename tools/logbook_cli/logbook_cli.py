@@ -421,9 +421,9 @@ def cmd_run(args, config):
 
     success, msg = send_payload_to_vps(payload, config)
     if success:
-        print(f"✅ Draf logbook tanggal {target_date} berhasil dikirim ke bot VPS! ({msg})")
+        print(f"✅ Draf logbook tanggal {target_date} berhasil dikirim ke Telegram! ({msg})")
     else:
-        print(f"⚠️ Gagal mengirim payload ke VPS: {msg}")
+        print(f"⚠️ Gagal mengirim payload ke Telegram: {msg}")
         save_pending_payload(idemp_key, payload, msg)
         print("💾 Payload telah disimpan ke antrean pending lokal untuk dicoba ulang berikutnya.")
 
@@ -466,13 +466,175 @@ def cmd_scan(args, config):
         print(f"• {name:<18} : {path} {status_commit}")
     print("=" * 65)
 
+# --- INTERACTIVE TERMINAL MENU (TUI) ---
+
+def read_key() -> str:
+    """Membaca satu input tombol keyboard secara cross-platform (Windows & Unix)."""
+    if os.name == 'nt':
+        import msvcrt
+        ch = msvcrt.getch()
+        if ch in (b'\x00', b'\xe0'):
+            code = msvcrt.getch()
+            if code == b'H':
+                return 'UP'
+            elif code == b'P':
+                return 'DOWN'
+            return 'OTHER'
+        elif ch in (b'\r', b'\n'):
+            return 'ENTER'
+        elif ch == b'\x03':  # Ctrl+C
+            raise KeyboardInterrupt
+        elif ch == b'\x1b':  # ESC
+            return 'ESC'
+        try:
+            return ch.decode('utf-8', errors='ignore')
+        except Exception:
+            return ''
+    else:
+        import tty
+        import termios
+        import select
+        fd = sys.stdin.fileno()
+        old_settings = termios.tcgetattr(fd)
+        try:
+            tty.setraw(fd)
+            ch = sys.stdin.read(1)
+            if ch == '\x1b':
+                r, _, _ = select.select([sys.stdin], [], [], 0.05)
+                if r:
+                    ch2 = sys.stdin.read(1)
+                    if ch2 == '[':
+                        ch3 = sys.stdin.read(1)
+                        if ch3 == 'A':
+                            return 'UP'
+                        elif ch3 == 'B':
+                            return 'DOWN'
+                return 'ESC'
+            elif ch in ('\r', '\n'):
+                return 'ENTER'
+            elif ch == '\x03':  # Ctrl+C
+                raise KeyboardInterrupt
+            return ch
+        finally:
+            termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
+
+def run_interactive_menu(config: dict):
+    """Menampilkan menu interaktif modern di terminal dengan navigasi panah & nomor."""
+    if os.name == 'nt':
+        os.system('')  # Mengaktifkan dukungan ANSI escape codes di Windows Console
+
+    options = [
+        ("🚀 Jalankan & Kirim Logbook Hari Ini", "run"),
+        ("👁️  Preview Logbook Hari Ini (Tanpa Kirim)", "preview"),
+        ("🔍 Scan Repositori Git Terdeteksi", "scan"),
+        ("🔄 Kirim Ulang Draf Tertunda (Send Pending)", "send-pending"),
+        ("📅 Jalankan untuk Tanggal Tertentu", "custom-date"),
+        ("❌ Keluar", "exit")
+    ]
+
+    selected_index = 0
+
+    while True:
+        # Bersihkan layar dan gambar header
+        print("\033[2J\033[H", end="")
+        print("┌────────────────────────────────────────────────────────┐")
+        print("│            🚀 Git Logbook Automation CLI               │")
+        print("└────────────────────────────────────────────────────────┘")
+        print("Gunakan tombol panah [↑ / ↓] atau nomor [1-6], tekan [Enter]:\n")
+
+        for idx, (label, _) in enumerate(options):
+            if idx == selected_index:
+                # Opsi terpilih (Cyan tebal dengan penanda panah)
+                print(f"\033[1;36m  > {label}\033[0m")
+            else:
+                print(f"    {label}")
+
+        print("\n\033[90m(Tekan 'q' atau Ctrl+C untuk keluar)\033[0m")
+
+        # Loop penangkapan tombol
+        while True:
+            try:
+                key = read_key()
+            except (KeyboardInterrupt, EOFError):
+                print("\n\n👋 Keluar dari Logbook CLI.")
+                return
+            except Exception:
+                # Fallback sederhana jika raw mode terminal tidak didukung
+                try:
+                    choice = input("\nPilih nomor [1-6]: ").strip()
+                    if choice in ('1', '2', '3', '4', '5', '6'):
+                        selected_index = int(choice) - 1
+                        key = 'ENTER'
+                        break
+                    elif choice.lower() in ('q', 'exit', '0'):
+                        print("\n👋 Keluar dari Logbook CLI.")
+                        return
+                except (KeyboardInterrupt, EOFError):
+                    print("\n👋 Keluar.")
+                    return
+
+            if key == 'UP':
+                selected_index = (selected_index - 1) % len(options)
+                break
+            elif key == 'DOWN':
+                selected_index = (selected_index + 1) % len(options)
+                break
+            elif key in ('1', '2', '3', '4', '5', '6'):
+                selected_index = int(key) - 1
+                key = 'ENTER'
+                break
+            elif key == 'ENTER':
+                break
+            elif key in ('q', 'Q', 'QUIT'):
+                print("\n\n👋 Keluar dari Logbook CLI. Sampai jumpa!")
+                return
+
+        if key == 'ENTER':
+            chosen_action = options[selected_index][1]
+            if chosen_action == "exit":
+                print("\n👋 Keluar dari Logbook CLI. Sampai jumpa!")
+                return
+
+            print("\n" + "=" * 65)
+            if chosen_action == "run":
+                cmd_run(argparse.Namespace(date=None, no_ai=False), config)
+            elif chosen_action == "preview":
+                cmd_preview(argparse.Namespace(date=None, no_ai=False), config)
+            elif chosen_action == "scan":
+                cmd_scan(argparse.Namespace(), config)
+            elif chosen_action == "send-pending":
+                cmd_send_pending(argparse.Namespace(), config)
+            elif chosen_action == "custom-date":
+                print("📅 PILIH TANGGAL KUSTOM")
+                print("-" * 65)
+                try:
+                    target_date = input("Masukkan tanggal commit (YYYY-MM-DD): ").strip()
+                    datetime.strptime(target_date, "%Y-%m-%d")
+                    mode = input("Pilih tindakan: [1] Preview  [2] Kirim ke VPS (default 1): ").strip()
+                    print("-" * 65)
+                    if mode == "2":
+                        cmd_run(argparse.Namespace(date=target_date, no_ai=False), config)
+                    else:
+                        cmd_preview(argparse.Namespace(date=target_date, no_ai=False), config)
+                except ValueError:
+                    print("❌ Format tanggal tidak valid. Harus YYYY-MM-DD (contoh: 2026-10-27).")
+                except (KeyboardInterrupt, EOFError):
+                    print("\nOperasi dibatalkan.")
+
+            print("\n" + "-" * 65)
+            try:
+                input("👉 Tekan [Enter] untuk kembali ke menu utama...")
+            except (KeyboardInterrupt, EOFError):
+                print("\n👋 Keluar dari Logbook CLI.")
+                return
+
 def main():
     base_parser = argparse.ArgumentParser(add_help=False)
     base_parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG_PATH, help="Path ke file konfigurasi json")
     base_parser.add_argument("--insecure", action="store_true", help="Abaikan verifikasi sertifikat SSL")
 
     parser = argparse.ArgumentParser(description="Git Logbook Automation CLI", parents=[base_parser])
-    subparsers = parser.add_subparsers(dest="command", required=True)
+    subparsers = parser.add_subparsers(dest="command", required=False)
 
     # scan
     subparsers.add_parser("scan", parents=[base_parser], help="Pindai dan tampilkan daftar repositori Git yang terdeteksi")
@@ -495,6 +657,14 @@ def main():
     if getattr(args, "insecure", False):
         config["verify_ssl"] = False
 
+    if not args.command:
+        if sys.stdin.isatty():
+            run_interactive_menu(config)
+        else:
+            parser.print_help()
+            sys.exit(1)
+        return
+
     if args.command == "scan":
         cmd_scan(args, config)
     elif args.command == "preview":
@@ -505,5 +675,4 @@ def main():
         cmd_send_pending(args, config)
 
 if __name__ == "__main__":
-
     main()

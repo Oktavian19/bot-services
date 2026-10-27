@@ -342,7 +342,8 @@ def send_payload_to_vps(payload: dict, config: dict) -> tuple:
         data=body_bytes,
         headers={
             "Authorization": f"Bearer {token}",
-            "Content-Type": "application/json"
+            "Content-Type": "application/json",
+            "User-Agent": "logbook-cli/1.0"
         }
     )
 

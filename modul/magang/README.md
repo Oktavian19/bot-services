@@ -65,4 +65,3 @@ magang.init_magang(bot)
 
 - `modul/magang/main.py`: Logika scraping portal JTI, pengolah command `/magang`, dan background thread pemantauan.
 - `modul/magang/database.py`: Operasi database SQLite (`users.db`) dan enkripsi/dekripsi password dengan Fernet.
-- `tools/migrasi_db.py`: Script pembantu untuk migrasi database lama (plaintext ke Fernet encrypted).

@@ -15,8 +15,3 @@ __pycache__/
 # Environment
 .env
 .env.bot
-
-# Logbook CLI & systemd
-tools/logbook_cli/config.json
-tools/logbook_cli/*.service
-tools/logbook_cli/*.timer

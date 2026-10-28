@@ -52,7 +52,6 @@ Prefix all callback_data with module code to prevent collisions:
 
 - **Main menu routes via `process_new_messages`** — inline callbacks in `main.py` set `call.message.text = "/cmd"` then call `bot.process_new_messages([call.message])` to trigger command handlers.
 - **Date format is DD-MM-YYYY** throughout the reminder module.
-- **`tools/migrasi_db.py`** script reads/writes `users.db` in its own directory (`tools/`), not `modul/magang/`. Move or symlink before running.
 - **Logging uses `print()`** with bracketed prefixes (`[MAGANG]`, `[BENSIN]`, `[REMINDER]`, `[LOGBOOK]`, etc.) — no `logging` module in use.
 - **Password handling**: magang & logbook modules encrypt credentials with Fernet before SQLite storage; Telegram messages with passwords are deleted upon receipt.
 - **External deps**: requires `speedtest` CLI binary (Ookla) for `/speedtest` command; scrapes `jti.polinema.ac.id/jtiportal` for magang and `jti.polinema.ac.id/dermaga` for logbook monitoring & submission.

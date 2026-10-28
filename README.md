@@ -12,18 +12,6 @@ A multi-module Telegram bot that runs on a Debian server, providing network upti
 | **Bensin** (Fuel) | Register a motorcycle with initial & current odometer readings. Log fuel refills, view/edit/delete history, and get statistics (km/L). |
 | **Magang** (Internship) | *(Archived / Disabled)* Monitors student internship status by scraping `jti.polinema.ac.id/jtiportal`. See [`modul/magang/README.md`](modul/magang/README.md) to reactivate. |
 
-## Logbook CLI (Client Downloads)
-
-Bagi pengguna / rekan mahasiswa yang ingin menjalankan pemindai commit Git otomatis di laptop tanpa perlu mengklon seluruh repositori bot atau menginstal Python:
-
-[![Release](https://img.shields.io/badge/Release-cli--latest-brightgreen)](https://github.com/Oktavian19/bot-services/releases/tag/cli-latest)
-
-| Platform | Format | Link Unduhan |
-|---|---|---|
-| **Windows (x64)** | ZIP (`logbook_cli.exe` standalone) | [logbook-cli-windows-x64.zip](https://github.com/Oktavian19/bot-services/releases/download/cli-latest/logbook-cli-windows-x64.zip) |
-| **Linux (x64)** | ZIP (`logbook_cli` binary standalone) | [logbook-cli-linux-x64.zip](https://github.com/Oktavian19/bot-services/releases/download/cli-latest/logbook-cli-linux-x64.zip) |
-
-> 📖 Dokumentasi konfigurasi dan penjadwalan otomatis (Task Scheduler / systemd timer) tersedia lengkap di [`tools/logbook_cli/README.md`](tools/logbook_cli/README.md).
 
 ## Requirements
 
@@ -91,13 +79,6 @@ bot-services/
 │       ├── main.py          #   Scrapes portal, periodic checking thread
 │       ├── database.py      #   SQLite + Fernet encryption
 │       └── README.md        #   Reactivation & module documentation
-└── tools/
-    ├── logbook_cli/         # Developer CLI & automated Git activity scanner
-    │   ├── logbook_cli.py   #   Commit scanner, AI summary generator, and SSH tunnel pusher
-    │   ├── config.json      #   Local developer configuration (endpoint, repos, token)
-    │   └── config.example.json
-    ├── test_logbook.py      # Comprehensive test suite for logbook module and CLI (14 unit tests)
-    └── migrasi_db.py        # Migrates plaintext passwords to encrypted (legacy magang)
 ```
 
 ## Bot Commands
@@ -116,31 +97,18 @@ bot-services/
 | `/ping` | Core | Check Debian server connectivity |
 | `/speedtest` | Jaringan | *(Admin only)* Run Ookla internet speed test |
 
-## Local Logbook CLI (`tools/logbook_cli/`)
+## Local Logbook CLI
 
-Developers working across multiple repositories can automatically generate and submit daily logbooks:
+Aplikasi CLI pengembang untuk mengumpulkan aktivitas Git dan mengirimkan logbook harian kini dikelola di repositori mandiri:
+👉 **[Oktavian19/logbook-cli](https://github.com/Oktavian19/logbook-cli)**
 
-1. **Register with the bot**: Send `/daftar_logbook <username> <password>` to the bot in Telegram to receive your unique `api_token`.
-2. **Configure CLI**: Create or update `tools/logbook_cli/config.json`:
-   ```json
-   {
-     "vps_endpoint": "http://127.0.0.1:8088/api/logbook",
-     "api_token": "YOUR_PERSONAL_TOKEN_FROM_TELEGRAM",
-     "openai_api_key": "optional-key-if-using-ai",
-     "openai_base_url": "optional-url",
-     "openai_model": "optional-model",
-     "jam_masuk": "07:10",
-     "jam_pulang": "16:25",
-     "repositories": {
-       "my-project": "/path/to/my-project/"
-     }
-   }
-   ```
+1. **Register with the bot**: Kirim `/daftar_logbook <username> <password>` ke bot di Telegram untuk mendapatkan `api_token` pribadi Anda.
+2. **Setup CLI**: Kloning atau unduh binary standalone dari repositori [logbook-cli](https://github.com/Oktavian19/logbook-cli), lalu sesuaikan file `config.json`.
 3. **Usage**:
-   - `python tools/logbook_cli/logbook_cli.py scan`: Scan configured repositories and discover nested Git directories.
-   - `python tools/logbook_cli/logbook_cli.py preview`: Preview today's commits and generated summary without sending.
-   - `python tools/logbook_cli/logbook_cli.py run`: Collect commits, generate summary, open SSH tunnel if needed, and push draft to the VPS.
-   - `python tools/logbook_cli/logbook_cli.py send-pending`: Retry sending payloads saved locally during network downtime.
+   - `python logbook_cli.py scan`: Pindai repositori terkonfigurasi.
+   - `python logbook_cli.py preview`: Lihat draf logbook dan ringkasan AI sebelum dikirim.
+   - `python logbook_cli.py run`: Kumpulkan commit, buat ringkasan, dan kirim draf ke API bot.
+   - `python logbook_cli.py send-pending`: Kirim ulang logbook tertunda jika sempat offline.
 
 ## Architecture Notes
 

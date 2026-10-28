@@ -10,8 +10,17 @@ import urllib.request
 import urllib.error
 import time
 import ssl
+import socket
 from pathlib import Path
 from datetime import datetime
+
+# Prioritaskan IPv4 daripada IPv6 untuk menghindari kegagalan routing/NAT64 atau rekaman DNS AAAA yang bermasalah
+_orig_getaddrinfo = socket.getaddrinfo
+def _getaddrinfo_prefer_ipv4(*args, **kwargs):
+    responses = _orig_getaddrinfo(*args, **kwargs)
+    return sorted(responses, key=lambda x: 0 if x[0] == socket.AF_INET else 1)
+socket.getaddrinfo = _getaddrinfo_prefer_ipv4
+
 
 if getattr(sys, "frozen", False):
     BASE_DIR = Path(sys.executable).resolve().parent
@@ -466,177 +475,107 @@ def cmd_scan(args, config):
         print(f"• {name:<18} : {path} {status_commit}")
     print("=" * 65)
 
-# --- INTERACTIVE TERMINAL MENU (TUI) ---
-
-def read_key() -> str:
-    """Membaca satu input tombol keyboard secara unbuffered cross-platform (Windows & Unix)."""
-    if os.name == 'nt':
-        import msvcrt
-        ch = msvcrt.getch()
-        if ch in (b'\x00', b'\xe0'):
-            code = msvcrt.getch()
-            if code in (b'H', b'K'):  # Up or Left
-                return 'UP'
-            elif code in (b'P', b'M'): # Down or Right
-                return 'DOWN'
-            return 'OTHER'
-        elif ch in (b'\r', b'\n'):
-            return 'ENTER'
-        elif ch == b'\x03':  # Ctrl+C
-            raise KeyboardInterrupt
-        elif ch in (b'q', b'Q'):
-            return 'QUIT'
-        elif ch in (b'k', b'K'):
-            return 'UP'
-        elif ch in (b'j', b'J'):
-            return 'DOWN'
-        try:
-            decoded = ch.decode('utf-8', errors='ignore').strip()
-            if decoded in ('1', '2', '3', '4', '5', '6'):
-                return decoded
-            return decoded
-        except Exception:
-            return ''
-    else:
-        import tty
-        import termios
-        fd = sys.stdin.fileno()
-        old_settings = termios.tcgetattr(fd)
-        try:
-            tty.setcbreak(fd)
-            # Baca langsung byte mentah dari file descriptor tanpa buffering Python TextIOWrapper
-            b = os.read(fd, 8)
-            if b in (b'\x1b[A', b'\x1bOA') or b in (b'k', b'K'):
-                return 'UP'
-            elif b in (b'\x1b[B', b'\x1bOB') or b in (b'j', b'J'):
-                return 'DOWN'
-            elif b in (b'\r', b'\n'):
-                return 'ENTER'
-            elif b in (b'q', b'Q'):
-                return 'QUIT'
-            elif b == b'\x03':  # Ctrl+C
-                raise KeyboardInterrupt
-            elif b == b'\x1b':  # standalone ESC
-                return 'ESC'
-            try:
-                decoded = b.decode('utf-8', errors='ignore').strip()
-                if decoded in ('1', '2', '3', '4', '5', '6'):
-                    return decoded
-                return decoded
-            except Exception:
-                return ''
-        finally:
-            termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
+# --- INTERACTIVE TERMINAL MENU ---
 
 def run_interactive_menu(config: dict):
-    """Menampilkan menu interaktif modern di terminal dengan navigasi panah & nomor."""
+    """Menampilkan menu interaktif berbasis nomor di terminal dengan status ringkas dan panduan jelas."""
     if os.name == 'nt':
-        os.system('')  # Mengaktifkan dukungan ANSI escape codes di Windows Console
-
-    options = [
-        ("🚀 Jalankan & Kirim Logbook Hari Ini", "run"),
-        ("👁️  Preview Logbook Hari Ini (Tanpa Kirim)", "preview"),
-        ("🔍 Scan Repositori Git Terdeteksi", "scan"),
-        ("🔄 Kirim Ulang Draf Tertunda (Send Pending)", "send-pending"),
-        ("📅 Jalankan untuk Tanggal Tertentu", "custom-date"),
-        ("❌ Keluar", "exit")
-    ]
-
-    selected_index = 0
+        os.system('')  # Mengaktifkan dukungan ANSI colors di Windows Console
 
     while True:
-        # Bersihkan layar dan gambar header
+        # 1. Ambil status ringkas
+        today_str = datetime.now().strftime("%Y-%m-%d")
+        pending_list = get_pending_payloads()
+        pending_count = len(pending_list)
+
+        # 2. Gambar header status ringkas
         print("\033[2J\033[H", end="")
         print("┌────────────────────────────────────────────────────────┐")
         print("│            🚀 Git Logbook Automation CLI               │")
-        print("└────────────────────────────────────────────────────────┘")
-        print("Gunakan panah [↑ / ↓] atau ketik nomor [1-6], tekan [Enter] untuk memilih:\n")
+        print(f"│  📅 Tanggal : {today_str:<39}  │")
+        if pending_count > 0:
+            print(f"│  ⚠️ Antrean : {pending_count} draf tertunda (perlu dikirim ulang){' '*4}│")
+        else:
+            print(f"│  🟢 Antrean : Bersih (tidak ada draf tertunda){' '*10}│")
+        print("└────────────────────────────────────────────────────────┘\n")
 
-        for idx, (label, _) in enumerate(options):
-            if idx == selected_index:
-                # Opsi terpilih (Cyan tebal dengan penanda panah)
-                print(f"\033[1;36m  > {label}\033[0m")
-            else:
-                print(f"    {label}")
+        print("PILIHAN MENU (Ketik angka menu yang diinginkan):\n")
 
-        print("\n\033[90m(Tekan 'q' atau Ctrl+C untuk keluar)\033[0m")
+        print("  \033[1;36m[1] 🚀 Kirim Logbook Hari Ini\033[0m")
+        print("      Membaca commit hari ini, buat ringkasan AI, lalu kirim draf ke Telegram VPS.\n")
 
-        # Loop penangkapan tombol
-        while True:
+        print("  \033[1;36m[2] 👁️  Preview Draf Hari Ini\033[0m")
+        print("      Melihat daftar commit & draf ringkasan di terminal tanpa mengirim ke server.\n")
+
+        print("  \033[1;36m[3] 🔍 Scan Repositori Git\033[0m")
+        print("      Melihat daftar folder proyek lokal yang terdeteksi beserta status commit hari ini.\n")
+
+        if pending_count > 0:
+            print(f"  \033[1;33m[4] 🔄 Kirim Ulang Draf Tertunda ({pending_count} Draf Menunggu!)\033[0m")
+            print("      \033[33mMencoba mengirim ulang draf yang sebelumnya gagal karena offline/gangguan jaringan.\033[0m\n")
+        else:
+            print("  \033[1;36m[4] 🔄 Kirim Ulang Draf Tertunda\033[0m")
+            print("      Mencoba mengirim ulang draf yang sebelumnya gagal karena offline/gangguan jaringan.\n")
+
+        print("  \033[1;36m[5] 📅 Logbook Tanggal Tertentu\033[0m")
+        print("      Membuat draf atau mengirim logbook untuk tanggal kustom lampau (YYYY-MM-DD).\n")
+
+        print("  \033[1;31m[0] ❌ Keluar\033[0m (atau ketik 'q')\n")
+
+        # 3. Minta input nomor
+        try:
+            choice = input("👉 Masukkan nomor pilihan [1-5, atau 0 untuk keluar]: ").strip()
+        except (KeyboardInterrupt, EOFError):
+            print("\n\n👋 Keluar dari Logbook CLI.")
+            return
+
+        if not choice:
+            print("\n⚠️ Pilihan tidak boleh kosong. Silakan masukkan angka 1 sampai 5 (atau 0 untuk keluar).")
+            time.sleep(1.5)
+            continue
+
+        if choice in ('0', 'q', 'Q', 'exit'):
+            print("\n👋 Keluar dari Logbook CLI. Sampai jumpa!")
+            return
+
+        if choice not in ('1', '2', '3', '4', '5'):
+            print(f"\n⚠️ Pilihan '{choice}' tidak valid. Silakan masukkan angka 1 sampai 5 (atau 0 untuk keluar).")
+            time.sleep(1.8)
+            continue
+
+        # 4. Eksekusi aksi yang dipilih
+        print("\n" + "=" * 65)
+        if choice == "1":
+            cmd_run(argparse.Namespace(date=None, no_ai=False), config)
+        elif choice == "2":
+            cmd_preview(argparse.Namespace(date=None, no_ai=False), config)
+        elif choice == "3":
+            cmd_scan(argparse.Namespace(), config)
+        elif choice == "4":
+            cmd_send_pending(argparse.Namespace(), config)
+        elif choice == "5":
+            print("📅 PILIH TANGGAL KUSTOM")
+            print("-" * 65)
             try:
-                key = read_key()
-            except (KeyboardInterrupt, EOFError):
-                print("\n\n👋 Keluar dari Logbook CLI.")
-                return
-            except Exception:
-                # Fallback sederhana jika cbreak mode terminal tidak didukung
-                try:
-                    choice = input("\nPilih nomor [1-6]: ").strip()
-                    if choice in ('1', '2', '3', '4', '5', '6'):
-                        selected_index = int(choice) - 1
-                        key = 'ENTER'
-                        break
-                    elif choice.lower() in ('q', 'exit', '0'):
-                        print("\n👋 Keluar dari Logbook CLI.")
-                        return
-                except (KeyboardInterrupt, EOFError):
-                    print("\n👋 Keluar.")
-                    return
-
-            if key == 'UP':
-                selected_index = (selected_index - 1) % len(options)
-                break
-            elif key == 'DOWN':
-                selected_index = (selected_index + 1) % len(options)
-                break
-            elif key in ('1', '2', '3', '4', '5', '6'):
-                selected_index = int(key) - 1
-                # Sorot kursor ke nomor tersebut dan render ulang (menunggu Enter)
-                break
-            elif key == 'ENTER':
-                break
-            elif key in ('q', 'Q', 'QUIT'):
-                print("\n\n👋 Keluar dari Logbook CLI. Sampai jumpa!")
-                return
-
-        if key == 'ENTER':
-            chosen_action = options[selected_index][1]
-            if chosen_action == "exit":
-                print("\n👋 Keluar dari Logbook CLI. Sampai jumpa!")
-                return
-
-            print("\n" + "=" * 65)
-            if chosen_action == "run":
-                cmd_run(argparse.Namespace(date=None, no_ai=False), config)
-            elif chosen_action == "preview":
-                cmd_preview(argparse.Namespace(date=None, no_ai=False), config)
-            elif chosen_action == "scan":
-                cmd_scan(argparse.Namespace(), config)
-            elif chosen_action == "send-pending":
-                cmd_send_pending(argparse.Namespace(), config)
-            elif chosen_action == "custom-date":
-                print("📅 PILIH TANGGAL KUSTOM")
+                target_date = input("Masukkan tanggal commit (YYYY-MM-DD): ").strip()
+                datetime.strptime(target_date, "%Y-%m-%d")
+                mode = input("Pilih tindakan: [1] Preview  [2] Kirim ke VPS (default 1): ").strip()
                 print("-" * 65)
-                try:
-                    target_date = input("Masukkan tanggal commit (YYYY-MM-DD): ").strip()
-                    datetime.strptime(target_date, "%Y-%m-%d")
-                    mode = input("Pilih tindakan: [1] Preview  [2] Kirim ke VPS (default 1): ").strip()
-                    print("-" * 65)
-                    if mode == "2":
-                        cmd_run(argparse.Namespace(date=target_date, no_ai=False), config)
-                    else:
-                        cmd_preview(argparse.Namespace(date=target_date, no_ai=False), config)
-                except ValueError:
-                    print("❌ Format tanggal tidak valid. Harus YYYY-MM-DD (contoh: 2026-10-27).")
-                except (KeyboardInterrupt, EOFError):
-                    print("\nOperasi dibatalkan.")
-
-            print("\n" + "-" * 65)
-            try:
-                input("👉 Tekan [Enter] untuk kembali ke menu utama...")
+                if mode == "2":
+                    cmd_run(argparse.Namespace(date=target_date, no_ai=False), config)
+                else:
+                    cmd_preview(argparse.Namespace(date=target_date, no_ai=False), config)
+            except ValueError:
+                print("❌ Format tanggal tidak valid. Harus YYYY-MM-DD (contoh: 2026-10-28).")
             except (KeyboardInterrupt, EOFError):
-                print("\n👋 Keluar dari Logbook CLI.")
-                return
+                print("\nOperasi dibatalkan.")
+
+        print("\n" + "-" * 65)
+        try:
+            input("👉 Tekan [Enter] untuk kembali ke menu utama...")
+        except (KeyboardInterrupt, EOFError):
+            print("\n👋 Keluar dari Logbook CLI.")
+            return
 
 def main():
     base_parser = argparse.ArgumentParser(add_help=False)

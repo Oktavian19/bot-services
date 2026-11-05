@@ -6,6 +6,7 @@ import requests
 from bs4 import BeautifulSoup
 from datetime import datetime
 from .database import get_user_credential, get_user_by_chat_id
+from .sync import get_user_lock
 
 # --- PATCH FORCE IPV4 ---
 def allowed_gai_family():
@@ -234,7 +235,9 @@ def submit_logbook_to_dermaga(draft_dict: dict, override_id: str = None, force: 
     default_lng = (user_meta.get('default_lng') if user_meta else None) or os.environ.get('DERMAGA_DEFAULT_LNG', '112.6247')
     default_akurasi = (user_meta.get('default_akurasi') if user_meta else None) or os.environ.get('DERMAGA_DEFAULT_AKURASI', '15')
 
-    try:
+    user_lock = get_user_lock(chat_id) if chat_id else None
+
+    def _do_submit():
         session = get_authenticated_session(chat_id=chat_id)
         mon_info = check_monitoring_page(session, target_date)
 
@@ -300,6 +303,12 @@ def submit_logbook_to_dermaga(draft_dict: dict, override_id: str = None, force: 
             'message': f"Logbook tanggal {target_date} terverifikasi berhasil tersimpan di tabel DERMAGA (ID: #{web_id})."
         }
 
+    try:
+        if user_lock:
+            with user_lock:
+                return _do_submit()
+        else:
+            return _do_submit()
     except Exception as e:
         print(f"[LOGBOOK-WEB - ERROR] Gagal submit ke DERMAGA untuk User {chat_id}: {e}")
         return {

@@ -1,16 +1,20 @@
 import os
 import json
 import html
+import time
 from telebot import types
 from datetime import datetime
 from .database import (
     setup_database, get_draft, update_draft_status, update_draft_summary,
     update_telegram_message_info, get_recent_drafts, register_user_credential,
     get_user_by_chat_id, get_user_credential, regenerate_api_token,
-    delete_user_credential, get_all_users
+    delete_user_credential, get_all_users, update_user_reminder_time,
+    get_user_reminder_time, complete_reminder_for_today, stop_reminder_for_today,
+    get_or_create_reminder_state, create_or_get_draft
 )
 from .website import submit_logbook_to_dermaga, fetch_dermaga_table, test_dermaga_login
 from .server import run_http_server
+from .scheduler import jalankan_logbook_scheduler
 
 def get_admin_chat_id() -> str:
     raw = os.environ.get('ADMIN_CHAT_ID', '')
@@ -141,6 +145,98 @@ def handle_edit_input(message, bot, draft_id: int):
         reply_markup=markup
     )
 
+def validate_time_format(time_str: str) -> bool:
+    """Memvalidasi format 24-jam HH:MM (00:00 s/d 23:59)."""
+    try:
+        parts = time_str.strip().split(':')
+        if len(parts) != 2:
+            return False
+        h, m = int(parts[0]), int(parts[1])
+        return 0 <= h <= 23 and 0 <= m <= 59
+    except Exception:
+        return False
+
+def handle_set_jam_input(message, bot):
+    """Handler langkah berikutnya untuk menerima teks jam pengingat baru."""
+    time_str = message.text.strip() if message.text else ""
+    if not time_str or time_str.startswith('/'):
+        bot.send_message(message.chat.id, "❌ Pengaturan jam pengingat dibatalkan.")
+        return
+
+    if not validate_time_format(time_str):
+        bot.send_message(
+            message.chat.id,
+            "❌ Format jam tidak valid. Harap gunakan format 24 jam <code>HH:MM</code> (antara 00:00 s/d 23:59).\nContoh: <code>16:05</code>",
+            parse_mode="HTML"
+        )
+        return
+
+    h, m = time_str.split(':')
+    norm_time = f"{int(h):02d}:{int(m):02d}"
+    update_user_reminder_time(message.chat.id, norm_time)
+    markup = types.InlineKeyboardMarkup()
+    markup.add(types.InlineKeyboardButton("📖 Kembali ke Menu Logbook", callback_data="log_menu_back"))
+    bot.send_message(
+        message.chat.id,
+        f"✅ <b>Jam Pengingat Berhasil Disimpan!</b>\n\n"
+        f"Mulai hari ini, Anda akan diingatkan terkait logbook pada pukul <b>{norm_time} WIB</b>.",
+        parse_mode="HTML",
+        reply_markup=markup
+    )
+
+def handle_manual_logbook_input(message, bot, target_date: str):
+    """Handler penerima teks aktivitas saat user klik 'Isi Logbook'."""
+    text = message.text.strip() if message.text else ""
+    if not text or text.startswith('/'):
+        bot.send_message(message.chat.id, "❌ Pengisian logbook dibatalkan atau format tidak valid.")
+        return
+
+    chat_id = message.chat.id
+    ts = int(time.time())
+    idempotency_key = f"manual_{chat_id}_{target_date}_{ts}"
+
+    try:
+        draft, is_new = create_or_get_draft(
+            chat_id=chat_id,
+            idempotency_key=idempotency_key,
+            date=target_date,
+            projects=["Logbook Harian"],
+            commits_summary=text,
+            raw_metadata=[],
+            jam_masuk="07:10",
+            jam_pulang="16:25"
+        )
+
+        # Selesaikan state pengingat hari ini
+        complete_reminder_for_today(chat_id, target_date)
+
+        draft_text = format_draft_message(draft)
+        markup = build_draft_keyboard(draft['id'])
+
+        bot.send_message(
+            chat_id,
+            "✅ <b>Draf Logbook Berhasil Dibuat!</b>\n\n"
+            "Silakan periksa dan lakukan konfirmasi untuk mengirim ke DERMAGA:\n\n" + draft_text,
+            parse_mode="HTML",
+            reply_markup=markup
+        )
+    except Exception as e:
+        bot.send_message(chat_id, f"❌ Terjadi kesalahan saat membuat draf logbook: {e}")
+
+def cancel_reminder_for_cli(bot, chat_id: int, target_date: str):
+    """Membatalkan siklus pengingat hari ini dan menonaktifkan tombol pengingat lama saat draf CLI diterima."""
+    try:
+        complete_reminder_for_today(chat_id, target_date)
+        state = get_or_create_reminder_state(chat_id, target_date)
+        last_msg_id = state.get('last_message_id')
+        if last_msg_id:
+            try:
+                bot.edit_message_reply_markup(chat_id, last_msg_id, reply_markup=None)
+            except Exception:
+                pass
+    except Exception as e:
+        print(f"[LOGBOOK-REMINDER] Gagal membatalkan pengingat untuk CLI: {e}")
+
 def render_logbook_menu(chat_id: int, user_id: int = None) -> tuple:
     """Helper untuk merender tampilan menu utama /logbook beserta Inline Keyboard."""
     user_meta = get_user_by_chat_id(chat_id)
@@ -162,10 +258,12 @@ def render_logbook_menu(chat_id: int, user_id: int = None) -> tuple:
     drafts = get_recent_drafts(chat_id=chat_id, limit=5) if user_meta else []
     username_str = user_meta['username'] if user_meta else "(Admin Mode)"
     token_str = (user_meta['api_token'][:8] + "..." + user_meta['api_token'][-6:]) if (user_meta and user_meta.get('api_token')) else "-"
+    reminder_time_str = user_meta.get('reminder_time', '16:05') if user_meta else '16:05'
 
     text = (
         f"📖 <b>Pusat Kendali Logbook DERMAGA</b>\n"
         f"👤 Akun DERMAGA: <code>{username_str}</code>\n"
+        f"⏰ Jam Pengingat: <b>{reminder_time_str} WIB</b>\n"
         f"🔑 Token CLI: <code>{token_str}</code>\n\n"
         f"<b>Riwayat Draf Anda Terakhir:</b>\n"
     )
@@ -194,10 +292,12 @@ def render_logbook_menu(chat_id: int, user_id: int = None) -> tuple:
     # Tombol interaktif utama
     btn_cek = types.InlineKeyboardButton("📋 Cek Logbook", callback_data="log_menu_cek")
     btn_token = types.InlineKeyboardButton("🔑 Token CLI", callback_data="log_menu_token")
+    btn_set_jam = types.InlineKeyboardButton("⏰ Jam Pengingat", callback_data="log_menu_set_jam")
     btn_refresh = types.InlineKeyboardButton("🔄 Refresh", callback_data="log_menu_refresh")
     btn_hapus = types.InlineKeyboardButton("🗑️ Hapus Akun", callback_data="log_menu_hapus")
     markup.add(btn_cek, btn_token)
-    markup.add(btn_refresh, btn_hapus)
+    markup.add(btn_set_jam, btn_refresh)
+    markup.add(btn_hapus)
 
     if admin:
         btn_admin = types.InlineKeyboardButton("👥 Daftar Pengguna (Admin)", callback_data="log_menu_admin_users")
@@ -362,6 +462,54 @@ def init_logbook(bot):
         except Exception as err:
             bot.edit_message_text(f"❌ Gagal mengambil data DERMAGA: {err}", message.chat.id, loading.message_id)
 
+    @bot.message_handler(commands=['set_jam_logbook', 'jam_logbook'])
+    def cmd_set_jam_logbook(message):
+        user = get_user_by_chat_id(message.chat.id)
+        if not user:
+            bot.send_message(
+                message.chat.id,
+                "⚠️ Akun Anda belum terdaftar.\n"
+                "Gunakan <code>/daftar_logbook &lt;username&gt; &lt;password&gt;</code> untuk mendaftar.",
+                parse_mode="HTML"
+            )
+            return
+
+        parts = message.text.split()
+        if len(parts) < 2:
+            current_time = user.get('reminder_time', '16:05')
+            bot.send_message(
+                message.chat.id,
+                f"⏰ <b>Pengaturan Jam Pengingat Logbook</b>\n\n"
+                f"Jam saat ini: <b>{current_time} WIB</b>\n\n"
+                f"Format pengubahan:\n"
+                f"<code>/set_jam_logbook HH:MM</code>\n"
+                f"<i>Contoh:</i> <code>/set_jam_logbook 16:30</code>",
+                parse_mode="HTML"
+            )
+            return
+
+        time_str = parts[1].strip()
+        if not validate_time_format(time_str):
+            bot.send_message(
+                message.chat.id,
+                "❌ Format jam tidak valid. Harap gunakan format 24 jam <code>HH:MM</code> (antara 00:00 s/d 23:59).\nContoh: <code>16:30</code>",
+                parse_mode="HTML"
+            )
+            return
+
+        h, m = time_str.split(':')
+        norm_time = f"{int(h):02d}:{int(m):02d}"
+        update_user_reminder_time(message.chat.id, norm_time)
+        markup = types.InlineKeyboardMarkup()
+        markup.add(types.InlineKeyboardButton("📖 Kembali ke Menu Logbook", callback_data="log_menu_back"))
+        bot.send_message(
+            message.chat.id,
+            f"✅ <b>Jam Pengingat Berhasil Diubah!</b>\n\n"
+            f"Setiap hari pada pukul <b>{norm_time} WIB</b>, bot akan memeriksa dan mengingatkan pengisian logbook Anda.",
+            parse_mode="HTML",
+            reply_markup=markup
+        )
+
     @bot.message_handler(commands=['hapus_akun_logbook'])
     def cmd_hapus_akun(message):
         user = get_user_by_chat_id(message.chat.id)
@@ -508,6 +656,29 @@ def init_logbook(bot):
             bot.edit_message_text(text, call.message.chat.id, call.message.message_id, parse_mode="HTML", reply_markup=markup)
             return
 
+        elif data == "log_menu_set_jam":
+            bot.answer_callback_query(call.id)
+            user = get_user_by_chat_id(call.message.chat.id)
+            if not user:
+                markup = types.InlineKeyboardMarkup()
+                markup.add(types.InlineKeyboardButton("⬅️ Kembali ke Menu Logbook", callback_data="log_menu_back"))
+                bot.edit_message_text("⚠️ Akun Anda belum terdaftar.", call.message.chat.id, call.message.message_id, reply_markup=markup)
+                return
+
+            current_jam = user.get('reminder_time', '16:05')
+            text = (
+                f"⏰ <b>Atur Jam Pengingat Logbook</b>\n\n"
+                f"Jam saat ini: <b>{current_jam} WIB</b>\n\n"
+                f"Silakan ketik jam pengingat baru yang Anda inginkan (format 24 jam: <code>HH:MM</code>).\n"
+                f"<i>Contoh:</i> <code>16:30</code> atau <code>17:00</code>\n\n"
+                f"<i>Kirimkan balasan pesan dengan format di atas atau klik Batal:</i>"
+            )
+            markup = types.InlineKeyboardMarkup()
+            markup.add(types.InlineKeyboardButton("❌ Batal", callback_data="log_menu_back"))
+            msg = bot.send_message(call.message.chat.id, text, parse_mode="HTML", reply_markup=markup)
+            bot.register_next_step_handler(msg, handle_set_jam_input, bot)
+            return
+
         elif data == "log_menu_hapus":
             bot.answer_callback_query(call.id)
             user = get_user_by_chat_id(call.message.chat.id)
@@ -568,6 +739,39 @@ def init_logbook(bot):
             bot.edit_message_text(text, call.message.chat.id, call.message.message_id, parse_mode="HTML", reply_markup=markup)
             return
 
+        # --- REMINDER CALLBACKS (FILL / STOP) ---
+        elif data.startswith('log_remind_fill'):
+            bot.answer_callback_query(call.id)
+            parts = data.split('_')
+            target_date = parts[3] if len(parts) > 3 else datetime.now().strftime('%Y-%m-%d')
+            prompt_msg = bot.send_message(
+                call.message.chat.id,
+                f"✍️ <b>Input Logbook Tanggal {target_date}</b>\n\n"
+                f"Silakan ketikkan deskripsi pekerjaan/aktivitas Anda hari ini:",
+                parse_mode="HTML"
+            )
+            bot.register_next_step_handler(prompt_msg, handle_manual_logbook_input, bot, target_date)
+            return
+
+        elif data.startswith('log_remind_stop'):
+            bot.answer_callback_query(call.id)
+            parts = data.split('_')
+            target_date = parts[3] if len(parts) > 3 else datetime.now().strftime('%Y-%m-%d')
+            stop_reminder_for_today(call.message.chat.id, target_date)
+            user_time = get_user_reminder_time(call.message.chat.id)
+            try:
+                bot.edit_message_reply_markup(call.message.chat.id, call.message.message_id, reply_markup=None)
+            except Exception:
+                pass
+            bot.send_message(
+                call.message.chat.id,
+                f"🔕 <b>Pengingat Dihentikan untuk Hari Ini</b>\n\n"
+                f"Bot tidak akan melakukan pengecekan atau mengirim pengingat logbook lagi untuk tanggal <code>{target_date}</code>.\n"
+                f"Anda akan diingatkan kembali besok pada jam <b>{user_time} WIB</b>.",
+                parse_mode="HTML"
+            )
+            return
+
         # --- DRAFT CALLBACKS (SUBMIT / OVERRIDE / SKIP / EDIT / CANCEL) ---
         draft_id = None
         if data.startswith(('log_confirm_', 'log_skip_', 'log_edit_', 'log_cancel_')):
@@ -622,6 +826,8 @@ def init_logbook(bot):
 
             elif res['status'] == 'SUCCESS':
                 update_draft_status(draft_id, 'submitted')
+                if draft.get('chat_id') and draft.get('date'):
+                    complete_reminder_for_today(draft['chat_id'], draft['date'])
                 bot.send_message(call.message.chat.id, f"🎉 <b>Sukses!</b> {res['message']}", parse_mode="HTML")
             else:
                 err_msg = res.get('message', 'Terjadi kesalahan')
@@ -643,6 +849,8 @@ def init_logbook(bot):
             res = submit_logbook_to_dermaga(draft, override_id=web_id)
             if res['status'] == 'SUCCESS':
                 update_draft_status(draft_id, 'submitted')
+                if draft.get('chat_id') and draft.get('date'):
+                    complete_reminder_for_today(draft['chat_id'], draft['date'])
                 bot.send_message(call.message.chat.id, f"✅ <b>Logbook berhasil diperbarui</b> di portal DERMAGA!", parse_mode="HTML")
             else:
                 err_msg = res.get('message', 'Gagal memperbarui logbook')
@@ -653,6 +861,8 @@ def init_logbook(bot):
         elif data.startswith('log_skip_'):
             bot.edit_message_reply_markup(call.message.chat.id, call.message.message_id, reply_markup=None)
             update_draft_status(draft_id, 'skipped')
+            if draft.get('chat_id') and draft.get('date'):
+                complete_reminder_for_today(draft['chat_id'], draft['date'])
             bot.send_message(call.message.chat.id, f"⏩ Draf logbook #{draft_id} ditandai selesai (dilewati). Data di DERMAGA tidak diubah.")
 
         # 4. Ubah draf
@@ -676,6 +886,13 @@ def init_logbook(bot):
 def jalankan_server(bot):
     """Runner thread untuk HTTP Server receiver yang meneruskan draf baru ke Telegram."""
     def on_new_draft(draft):
+        # Prioritas penuh logbook_cli: batalkan pengingat hari ini dan bersihkan tombol pengingat sebelumnya
+        if draft.get('chat_id') and draft.get('date'):
+            cancel_reminder_for_cli(bot, draft['chat_id'], draft['date'])
         send_draft_confirmation(bot, draft['id'])
 
     run_http_server(on_draft_cb=on_new_draft)
+
+def jalankan_scheduler(bot):
+    """Runner thread untuk scheduler background pengingat logbook."""
+    jalankan_logbook_scheduler(bot)

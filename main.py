@@ -33,6 +33,7 @@ def setup_bot_commands():
         types.BotCommand("ping", "Cek status koneksi server"),
         types.BotCommand("bensin", "Catatan konsumsi & riwayat BBM"),
         types.BotCommand("logbook", "Pusat kendali logbook DERMAGA"),
+        types.BotCommand("set_jam_logbook", "Atur jam pengingat logbook harian"),
     ]
     bot.set_my_commands(commands)
     print("[+] Menu rekomendasi command berhasil diterapkan!")
@@ -113,6 +114,11 @@ if __name__ == '__main__':
     thread_logbook = threading.Thread(target=logbook.jalankan_server, args=(bot,))
     thread_logbook.daemon = True
     thread_logbook.start()
+
+    print("Memulai background scheduler untuk logbook reminder...")
+    thread_logbook_scheduler = threading.Thread(target=logbook.jalankan_scheduler, args=(bot,))
+    thread_logbook_scheduler.daemon = True
+    thread_logbook_scheduler.start()
 
     print("Telegram bot siap dan berjalan!")
     bot.infinity_polling(timeout=20, long_polling_timeout=20)

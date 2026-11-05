@@ -88,6 +88,7 @@ bot-services/
 | `/start` | Core | Show main menu with inline buttons |
 | `/logbook` | Logbook | Interactive logbook control center with in-place action buttons |
 | `/daftar_logbook <user> <pass>` | Logbook | Register or update DERMAGA credentials; verifies login & returns CLI API token |
+| `/set_jam_logbook <HH:MM>` | Logbook | Set daily logbook reminder time (default: 16:05 WIB) |
 | `/token_logbook` | Logbook | View your CLI API token or generate a new one |
 | `/cek_logbook` | Logbook | View your recent logbook entries scraped directly from DERMAGA |
 | `/hapus_akun_logbook` | Logbook | Delete your registered account & credentials from the bot |

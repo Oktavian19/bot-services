@@ -65,8 +65,28 @@ def setup_database(force_reset: bool = False):
                     default_lat TEXT DEFAULT '-7.5815',
                     default_lng TEXT DEFAULT '112.6247',
                     default_akurasi TEXT DEFAULT '15',
+                    reminder_time TEXT DEFAULT '16:05',
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
+                )
+            ''')
+
+            # Migrasi kolom reminder_time jika belum ada pada tabel credentials
+            cur.execute("PRAGMA table_info(logbook_credentials)")
+            cred_cols = [r["name"] for r in cur.fetchall()]
+            if "reminder_time" not in cred_cols:
+                conn.execute("ALTER TABLE logbook_credentials ADD COLUMN reminder_time TEXT DEFAULT '16:05'")
+
+            conn.execute('''
+                CREATE TABLE IF NOT EXISTS logbook_reminder_state (
+                    chat_id INTEGER PRIMARY KEY,
+                    target_date TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    retry_count INTEGER DEFAULT 0,
+                    next_retry_at TEXT,
+                    last_message_id INTEGER,
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY (chat_id) REFERENCES logbook_credentials(chat_id) ON DELETE CASCADE
                 )
             ''')
 
@@ -154,7 +174,7 @@ def get_user_by_chat_id(chat_id: int) -> dict:
     try:
         with db_session() as conn:
             cur = conn.cursor()
-            cur.execute("SELECT chat_id, username, api_token, default_lat, default_lng, default_akurasi, created_at, updated_at FROM logbook_credentials WHERE chat_id = ?", (chat_id,))
+            cur.execute("SELECT chat_id, username, api_token, default_lat, default_lng, default_akurasi, reminder_time, created_at, updated_at FROM logbook_credentials WHERE chat_id = ?", (chat_id,))
             row = cur.fetchone()
             return dict(row) if row else None
     except Exception as e:
@@ -207,11 +227,135 @@ def get_all_users() -> list:
     try:
         with db_session() as conn:
             cur = conn.cursor()
-            cur.execute("SELECT chat_id, username, api_token, created_at, updated_at FROM logbook_credentials ORDER BY created_at ASC")
-            return [dict(r) for r in cur.fetchall()]
+            cur.execute("SELECT chat_id, username, api_token, reminder_time, created_at, updated_at FROM logbook_credentials ORDER BY created_at ASC")
+            users = []
+            for r in cur.fetchall():
+                u = dict(r)
+                u['is_active'] = True
+                users.append(u)
+            return users
     except Exception as e:
         print(f"[DB-LOGBOOK - ERROR] Gagal mengambil daftar user: {e}")
         return []
+
+# --- MANAJEMEN PENGINGAT LOGBOOK ---
+
+def update_user_reminder_time(chat_id: int, reminder_time: str) -> bool:
+    """Memperbarui jam pengingat logbook (format HH:MM) untuk user."""
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    try:
+        with db_session() as conn:
+            conn.execute('''
+                UPDATE logbook_credentials
+                SET reminder_time = ?, updated_at = ?
+                WHERE chat_id = ?
+            ''', (reminder_time.strip(), now_str, chat_id))
+        print(f"[DB-LOGBOOK] Jam pengingat User {chat_id} diubah menjadi {reminder_time}.")
+        return True
+    except Exception as e:
+        print(f"[DB-LOGBOOK - ERROR] Gagal memperbarui jam pengingat user {chat_id}: {e}")
+        return False
+
+def get_user_reminder_time(chat_id: int) -> str:
+    """Mengambil jam pengingat logbook user (default '16:05')."""
+    try:
+        with db_session() as conn:
+            cur = conn.cursor()
+            cur.execute("SELECT reminder_time FROM logbook_credentials WHERE chat_id = ?", (chat_id,))
+            row = cur.fetchone()
+            if row and row["reminder_time"]:
+                return str(row["reminder_time"]).strip()
+    except Exception as e:
+        print(f"[DB-LOGBOOK - ERROR] Gagal mengambil jam pengingat user {chat_id}: {e}")
+    return "16:05"
+
+def get_active_reminder_users() -> list:
+    """Mengambil daftar seluruh user yang memiliki kredensial logbook aktif."""
+    try:
+        with db_session() as conn:
+            cur = conn.cursor()
+            cur.execute("SELECT chat_id, username, COALESCE(reminder_time, '16:05') as reminder_time FROM logbook_credentials")
+            return [dict(r) for r in cur.fetchall()]
+    except Exception as e:
+        print(f"[DB-LOGBOOK - ERROR] Gagal mengambil user pengingat: {e}")
+        return []
+
+def get_or_create_reminder_state(chat_id: int, target_date: str) -> dict:
+    """Mengambil atau menginisialisasi state pengingat untuk target_date."""
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    try:
+        with db_session() as conn:
+            cur = conn.cursor()
+            cur.execute("SELECT * FROM logbook_reminder_state WHERE chat_id = ?", (chat_id,))
+            row = cur.fetchone()
+            if row and row["target_date"] == target_date:
+                return dict(row)
+
+            # Jika belum ada atau tanggal berbeda (hari baru), reset state untuk hari ini
+            conn.execute('''
+                INSERT OR REPLACE INTO logbook_reminder_state
+                (chat_id, target_date, status, retry_count, next_retry_at, last_message_id, updated_at)
+                VALUES (?, ?, 'idle', 0, NULL, NULL, ?)
+            ''', (chat_id, target_date, now_str))
+
+            cur.execute("SELECT * FROM logbook_reminder_state WHERE chat_id = ?", (chat_id,))
+            return dict(cur.fetchone())
+    except Exception as e:
+        print(f"[DB-LOGBOOK - ERROR] Gagal inisialisasi state pengingat user {chat_id}: {e}")
+        return {
+            'chat_id': chat_id,
+            'target_date': target_date,
+            'status': 'idle',
+            'retry_count': 0,
+            'next_retry_at': None,
+            'last_message_id': None,
+            'updated_at': now_str
+        }
+
+def update_reminder_state(chat_id: int, target_date: str, status: str, next_retry_at: str = None, message_id: int = None, increment_retry: bool = False) -> bool:
+    """Memperbarui status pengingat harian user."""
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    try:
+        with db_session() as conn:
+            cur = conn.cursor()
+            cur.execute("SELECT retry_count, last_message_id FROM logbook_reminder_state WHERE chat_id = ?", (chat_id,))
+            row = cur.fetchone()
+            current_retry = row["retry_count"] if row else 0
+            new_retry = (current_retry + 1) if increment_retry else current_retry
+            final_msg_id = message_id if message_id is not None else (row["last_message_id"] if row else None)
+
+            conn.execute('''
+                INSERT OR REPLACE INTO logbook_reminder_state
+                (chat_id, target_date, status, retry_count, next_retry_at, last_message_id, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            ''', (chat_id, target_date, status, new_retry, next_retry_at, final_msg_id, now_str))
+        return True
+    except Exception as e:
+        print(f"[DB-LOGBOOK - ERROR] Gagal update state pengingat user {chat_id}: {e}")
+        return False
+
+def stop_reminder_for_today(chat_id: int, target_date: str) -> bool:
+    """Menghentikan pengingat dan scan logbook untuk hari target_date."""
+    return update_reminder_state(chat_id, target_date, status='stopped', next_retry_at=None)
+
+def complete_reminder_for_today(chat_id: int, target_date: str) -> bool:
+    """Menandai bahwa logbook untuk hari target_date telah terisi atau selesai."""
+    return update_reminder_state(chat_id, target_date, status='completed', next_retry_at=None)
+
+def has_today_draft_or_submission(chat_id: int, target_date: str) -> bool:
+    """Memeriksa apakah sudah ada draf aktif (pending/approved) atau submission sukses hari ini."""
+    try:
+        with db_session() as conn:
+            cur = conn.cursor()
+            cur.execute('''
+                SELECT COUNT(*) as cnt FROM logbook_drafts 
+                WHERE chat_id = ? AND date = ? AND status IN ('pending', 'approved', 'submitted')
+            ''', (chat_id, target_date))
+            row = cur.fetchone()
+            return (row["cnt"] > 0) if row else False
+    except Exception as e:
+        print(f"[DB-LOGBOOK - ERROR] Gagal cek status draf hari ini untuk user {chat_id}: {e}")
+        return False
 
 # --- MANAJEMEN DRAF LOGBOOK MULTI-USER ---
 

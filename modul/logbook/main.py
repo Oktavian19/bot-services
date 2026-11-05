@@ -237,6 +237,283 @@ def cancel_reminder_for_cli(bot, chat_id: int, target_date: str):
     except Exception as e:
         print(f"[LOGBOOK-REMINDER] Gagal membatalkan pengingat untuk CLI: {e}")
 
+# --- MANAJEMEN SESI EDIT LOGBOOK INTERAKTIF ---
+
+_edit_sessions = {}
+
+MONTH_NAMES = {
+    '01': 'Januari', '02': 'Februari', '03': 'Maret', '04': 'April',
+    '05': 'Mei', '06': 'Juni', '07': 'Juli', '08': 'Agustus',
+    '09': 'September', '10': 'Oktober', '11': 'November', '12': 'Desember'
+}
+
+MONTH_SHORT = {
+    '01': 'Jan', '02': 'Feb', '03': 'Mar', '04': 'Apr',
+    '05': 'Mei', '06': 'Jun', '07': 'Jul', '08': 'Agu',
+    '09': 'Sep', '10': 'Okt', '11': 'Nov', '12': 'Des'
+}
+
+def format_month_name(ym: str) -> str:
+    """Mengubah format YYYY-MM menjadi nama bulan (contoh: 2026-11 -> November 2026)."""
+    try:
+        parts = ym.split('-')
+        if len(parts) == 2:
+            return f"{MONTH_NAMES.get(parts[1], parts[1])} {parts[0]}"
+    except Exception:
+        pass
+    return ym
+
+def format_short_date(tanggal_iso: str) -> str:
+    """Mengubah format YYYY-MM-DD menjadi label pendek (contoh: 2026-11-04 -> 04 Nov)."""
+    try:
+        parts = tanggal_iso.split('-')
+        if len(parts) == 3:
+            return f"{parts[2]} {MONTH_SHORT.get(parts[1], parts[1])}"
+    except Exception:
+        pass
+    return tanggal_iso
+
+def group_entries_by_month(entries: list) -> dict:
+    """Mengelompokkan entri logbook DERMAGA berdasarkan YYYY-MM."""
+    grouped = {}
+    for e in entries:
+        tgl = e.get('tanggal_iso', '')
+        ym = tgl[:7] if (len(tgl) >= 7 and '-' in tgl) else 'Lainnya'
+        if ym not in grouped:
+            grouped[ym] = []
+        grouped[ym].append(e)
+
+    # Urutkan tanggal di setiap bulan secara ascending
+    for ym in grouped:
+        grouped[ym].sort(key=lambda x: x.get('tanggal_iso', ''))
+
+    return grouped
+
+def build_month_calendar_keyboard(chat_id: int, current_month: str, months_list: list, month_entries: list):
+    """Membuat keyboard inline grid 3 kolom untuk tanggal logbook dan navigasi bulan."""
+    markup = types.InlineKeyboardMarkup()
+
+    # 1. Grid tanggal (3 tombol per baris)
+    row = []
+    for entry in month_entries:
+        web_id = entry.get('web_id')
+        tgl_short = format_short_date(entry.get('tanggal_iso', ''))
+        btn = types.InlineKeyboardButton(f"📅 {tgl_short}", callback_data=f"log_edpick_{web_id}")
+        row.append(btn)
+        if len(row) == 3:
+            markup.row(*row)
+            row = []
+    if row:
+        markup.row(*row)
+
+    # 2. Baris Navigasi Bulan
+    nav_row = []
+    if current_month in months_list:
+        curr_idx = months_list.index(current_month)
+        # Bulan sebelumnya (older month pada list descending: curr_idx + 1)
+        if curr_idx + 1 < len(months_list):
+            prev_m = months_list[curr_idx + 1]
+            nav_row.append(types.InlineKeyboardButton("⬅️ Bulan Sebelumnya", callback_data=f"log_edmonth_{prev_m}"))
+        # Bulan berikutnya (newer month pada list descending: curr_idx - 1)
+        if curr_idx - 1 >= 0:
+            next_m = months_list[curr_idx - 1]
+            nav_row.append(types.InlineKeyboardButton("Bulan Berikutnya ➡️", callback_data=f"log_edmonth_{next_m}"))
+    if nav_row:
+        markup.row(*nav_row)
+
+    # 3. Tombol Kembali
+    markup.row(types.InlineKeyboardButton("⬅️ Kembali ke Menu Logbook", callback_data="log_menu_back"))
+    return markup
+
+def send_month_view(bot, chat_id: int, current_month: str, old_message_id: int = None):
+    """Menampilkan daftar tanggal logbook bulan terpilih dengan menghapus pesan lama."""
+    session = _edit_sessions.get(chat_id)
+    if not session or not session.get('by_month'):
+        text, markup = render_logbook_menu(chat_id)
+        if old_message_id:
+            try:
+                bot.delete_message(chat_id, old_message_id)
+            except Exception:
+                pass
+        bot.send_message(chat_id, text, parse_mode="HTML", reply_markup=markup)
+        return
+
+    month_name = format_month_name(current_month)
+    month_entries = session['by_month'].get(current_month, [])
+    markup = build_month_calendar_keyboard(chat_id, current_month, session['months'], month_entries)
+
+    text = (
+        f"📅 <b>Pilih Tanggal Logbook untuk Diedit</b>\n\n"
+        f"Bulan: <b>{month_name}</b> ({len(month_entries)} entri tercatat)\n\n"
+        f"Silakan pilih tanggal yang ingin Anda ubah di bawah:"
+    )
+
+    if old_message_id:
+        try:
+            bot.delete_message(chat_id, old_message_id)
+        except Exception:
+            pass
+
+    bot.send_message(chat_id, text, parse_mode="HTML", reply_markup=markup)
+
+def render_edit_detail_message(session: dict) -> tuple:
+    """Format tampilan detail logbook terpilih beserta tombol aksi edit per bagian."""
+    orig = session.get('original', {})
+
+    tgl = session.get('tanggal', '-')
+    web_id = session.get('web_id', '-')
+    masuk = session.get('jam_masuk', '07:10')
+    pulang = session.get('jam_pulang', '16:25')
+    desk = html.escape(session.get('deskripsi', '-'))
+
+    masuk_changed = (masuk != orig.get('jam_masuk'))
+    pulang_changed = (pulang != orig.get('jam_pulang'))
+    desk_changed = (session.get('deskripsi') != orig.get('deskripsi'))
+    any_changed = masuk_changed or pulang_changed or desk_changed
+
+    masuk_badge = " <i>(diubah)</i>" if masuk_changed else ""
+    pulang_badge = " <i>(diubah)</i>" if pulang_changed else ""
+    desk_badge = " <i>(diubah)</i>" if desk_changed else ""
+
+    text = (
+        f"📝 <b>Detail Logbook Terpilih</b>\n\n"
+        f"🗓 <b>Tanggal:</b> <code>{tgl}</code> (ID: <code>#{web_id}</code>)\n"
+        f"⏰ <b>Jam Masuk:</b> <code>{masuk}</code>{masuk_badge}\n"
+        f"⏰ <b>Jam Pulang:</b> <code>{pulang}</code>{pulang_badge}\n"
+        f"📋 <b>Pekerjaan / Aktivitas:</b>{desk_badge}\n"
+        f"{desk}\n\n"
+    )
+
+    if any_changed:
+        text += "💡 <i>Terdapat perubahan yang belum disimpan. Klik 'Simpan Perubahan' untuk mengonfirmasi ke DERMAGA.</i>"
+    else:
+        text += "Silakan pilih bagian yang ingin Anda ubah di bawah:"
+
+    markup = types.InlineKeyboardMarkup()
+    btn_masuk = types.InlineKeyboardButton("⏰ Ubah Jam Masuk", callback_data="log_edact_masuk")
+    btn_pulang = types.InlineKeyboardButton("⏰ Ubah Jam Pulang", callback_data="log_edact_pulang")
+    markup.row(btn_masuk, btn_pulang)
+
+    btn_desk = types.InlineKeyboardButton("📝 Ubah Pekerjaan", callback_data="log_edact_desk")
+    markup.row(btn_desk)
+
+    btn_save = types.InlineKeyboardButton("💾 Simpan Perubahan" if any_changed else "💾 Simpan (Belum Ada Perubahan)", callback_data="log_edact_save")
+    markup.row(btn_save)
+
+    btn_back_dates = types.InlineKeyboardButton("⬅️ Pilih Tanggal Lain", callback_data="log_edact_backmonth")
+    btn_cancel = types.InlineKeyboardButton("❌ Batal", callback_data="log_edact_cancel")
+    markup.row(btn_back_dates, btn_cancel)
+
+    return text, markup
+
+def send_detail_view(bot, chat_id: int, old_message_id: int = None):
+    """Menampilkan detail logbook yang sedang diedit dengan menghapus pesan lama."""
+    session = _edit_sessions.get(chat_id)
+    if not session or not session.get('web_id'):
+        text, markup = render_logbook_menu(chat_id)
+        if old_message_id:
+            try:
+                bot.delete_message(chat_id, old_message_id)
+            except Exception:
+                pass
+        bot.send_message(chat_id, text, parse_mode="HTML", reply_markup=markup)
+        return
+
+    text, markup = render_edit_detail_message(session)
+    if old_message_id:
+        try:
+            bot.delete_message(chat_id, old_message_id)
+        except Exception:
+            pass
+
+    bot.send_message(chat_id, text, parse_mode="HTML", reply_markup=markup)
+
+def handle_input_edit_masuk(message, bot):
+    """Step handler input teks jam masuk baru."""
+    chat_id = message.chat.id
+    try:
+        bot.delete_message(chat_id, message.message_id)
+    except Exception:
+        pass
+
+    session = _edit_sessions.get(chat_id)
+    prompt_id = session.pop('prompt_msg_id', None) if session else None
+
+    if not session:
+        bot.send_message(chat_id, "❌ Sesi edit telah berakhir. Silakan buka menu /logbook.")
+        return
+
+    val = message.text.strip() if message.text else ""
+    if not val or val.startswith('/'):
+        bot.send_message(chat_id, "❌ Pengubahan jam masuk dibatalkan.")
+        send_detail_view(bot, chat_id, old_message_id=prompt_id)
+        return
+
+    if not validate_time_format(val):
+        bot.send_message(chat_id, "❌ Format jam tidak valid. Harap gunakan format 24 jam <code>HH:MM</code> (contoh: <code>07:15</code>).", parse_mode="HTML")
+        send_detail_view(bot, chat_id, old_message_id=prompt_id)
+        return
+
+    h, m = val.split(':')
+    norm_time = f"{int(h):02d}:{int(m):02d}"
+    session['jam_masuk'] = norm_time
+    send_detail_view(bot, chat_id, old_message_id=prompt_id)
+
+def handle_input_edit_pulang(message, bot):
+    """Step handler input teks jam pulang baru."""
+    chat_id = message.chat.id
+    try:
+        bot.delete_message(chat_id, message.message_id)
+    except Exception:
+        pass
+
+    session = _edit_sessions.get(chat_id)
+    prompt_id = session.pop('prompt_msg_id', None) if session else None
+
+    if not session:
+        bot.send_message(chat_id, "❌ Sesi edit telah berakhir. Silakan buka menu /logbook.")
+        return
+
+    val = message.text.strip() if message.text else ""
+    if not val or val.startswith('/'):
+        bot.send_message(chat_id, "❌ Pengubahan jam pulang dibatalkan.")
+        send_detail_view(bot, chat_id, old_message_id=prompt_id)
+        return
+
+    if not validate_time_format(val):
+        bot.send_message(chat_id, "❌ Format jam tidak valid. Harap gunakan format 24 jam <code>HH:MM</code> (contoh: <code>16:25</code>).", parse_mode="HTML")
+        send_detail_view(bot, chat_id, old_message_id=prompt_id)
+        return
+
+    h, m = val.split(':')
+    norm_time = f"{int(h):02d}:{int(m):02d}"
+    session['jam_pulang'] = norm_time
+    send_detail_view(bot, chat_id, old_message_id=prompt_id)
+
+def handle_input_edit_deskripsi(message, bot):
+    """Step handler input teks deskripsi pekerjaan baru."""
+    chat_id = message.chat.id
+    try:
+        bot.delete_message(chat_id, message.message_id)
+    except Exception:
+        pass
+
+    session = _edit_sessions.get(chat_id)
+    prompt_id = session.pop('prompt_msg_id', None) if session else None
+
+    if not session:
+        bot.send_message(chat_id, "❌ Sesi edit telah berakhir. Silakan buka menu /logbook.")
+        return
+
+    val = message.text.strip() if message.text else ""
+    if not val or val.startswith('/'):
+        bot.send_message(chat_id, "❌ Pengubahan deskripsi dibatalkan.")
+        send_detail_view(bot, chat_id, old_message_id=prompt_id)
+        return
+
+    session['deskripsi'] = val
+    send_detail_view(bot, chat_id, old_message_id=prompt_id)
+
 def render_logbook_menu(chat_id: int, user_id: int = None) -> tuple:
     """Helper untuk merender tampilan menu utama /logbook beserta Inline Keyboard."""
     user_meta = get_user_by_chat_id(chat_id)
@@ -291,13 +568,14 @@ def render_logbook_menu(chat_id: int, user_id: int = None) -> tuple:
 
     # Tombol interaktif utama
     btn_cek = types.InlineKeyboardButton("📋 Cek Logbook", callback_data="log_menu_cek")
+    btn_edit = types.InlineKeyboardButton("✏️ Edit Logbook", callback_data="log_menu_edit")
     btn_token = types.InlineKeyboardButton("🔑 Token CLI", callback_data="log_menu_token")
     btn_set_jam = types.InlineKeyboardButton("⏰ Jam Pengingat", callback_data="log_menu_set_jam")
     btn_refresh = types.InlineKeyboardButton("🔄 Refresh", callback_data="log_menu_refresh")
     btn_hapus = types.InlineKeyboardButton("🗑️ Hapus Akun", callback_data="log_menu_hapus")
-    markup.add(btn_cek, btn_token)
-    markup.add(btn_set_jam, btn_refresh)
-    markup.add(btn_hapus)
+    markup.add(btn_cek, btn_edit)
+    markup.add(btn_token, btn_set_jam)
+    markup.add(btn_refresh, btn_hapus)
 
     if admin:
         btn_admin = types.InlineKeyboardButton("👥 Daftar Pengguna (Admin)", callback_data="log_menu_admin_users")
@@ -737,6 +1015,279 @@ def init_logbook(bot):
                         f"  Terdaftar: <code>{u['created_at']}</code>\n\n"
                     )
             bot.edit_message_text(text, call.message.chat.id, call.message.message_id, parse_mode="HTML", reply_markup=markup)
+            return
+
+        # --- EDIT LOGBOOK INTERAKTIF CALLBACKS ---
+        elif data == "log_menu_edit":
+            bot.answer_callback_query(call.id)
+            user = get_user_by_chat_id(call.message.chat.id)
+            if not user:
+                markup = types.InlineKeyboardMarkup()
+                markup.add(types.InlineKeyboardButton("⬅️ Kembali ke Menu Logbook", callback_data="log_menu_back"))
+                bot.edit_message_text("⚠️ Akun DERMAGA Anda belum terdaftar.", call.message.chat.id, call.message.message_id, reply_markup=markup)
+                return
+
+            try:
+                bot.edit_message_text("⏳ <i>Sedang mengambil riwayat logbook dari portal DERMAGA...</i>", call.message.chat.id, call.message.message_id, parse_mode="HTML")
+            except Exception:
+                pass
+
+            try:
+                entries = fetch_dermaga_table(chat_id=call.message.chat.id)
+                if not entries:
+                    markup = types.InlineKeyboardMarkup()
+                    markup.add(types.InlineKeyboardButton("⬅️ Kembali ke Menu Logbook", callback_data="log_menu_back"))
+                    bot.edit_message_text(
+                        f"ℹ️ Belum ada entri logbook yang tercatat di akun DERMAGA <code>{user['username']}</code> untuk diedit.",
+                        call.message.chat.id,
+                        call.message.message_id,
+                        parse_mode="HTML",
+                        reply_markup=markup
+                    )
+                    return
+
+                editable_entries = [e for e in entries if e.get('web_id')]
+                if not editable_entries:
+                    editable_entries = entries
+
+                grouped = group_entries_by_month(editable_entries)
+                months_list = sorted(grouped.keys(), reverse=True)
+                current_month = months_list[0] if months_list else datetime.now().strftime('%Y-%m')
+
+                _edit_sessions[call.message.chat.id] = {
+                    'all_entries': editable_entries,
+                    'by_month': grouped,
+                    'months': months_list,
+                    'selected_month': current_month
+                }
+
+                send_month_view(bot, call.message.chat.id, current_month, old_message_id=call.message.message_id)
+            except Exception as err:
+                markup = types.InlineKeyboardMarkup()
+                markup.add(types.InlineKeyboardButton("⬅️ Kembali ke Menu Logbook", callback_data="log_menu_back"))
+                bot.edit_message_text(f"❌ Gagal mengambil data DERMAGA: {err}", call.message.chat.id, call.message.message_id, reply_markup=markup)
+            return
+
+        elif data.startswith('log_edmonth_'):
+            bot.answer_callback_query(call.id)
+            target_month = data.split('_')[2]
+            session = _edit_sessions.get(call.message.chat.id)
+            if not session or not session.get('by_month'):
+                text, markup = render_logbook_menu(call.message.chat.id, call.from_user.id)
+                try:
+                    bot.delete_message(call.message.chat.id, call.message.message_id)
+                except Exception:
+                    pass
+                bot.send_message(call.message.chat.id, text, parse_mode="HTML", reply_markup=markup)
+                return
+            session['selected_month'] = target_month
+            send_month_view(bot, call.message.chat.id, target_month, old_message_id=call.message.message_id)
+            return
+
+        elif data.startswith('log_edpick_'):
+            bot.answer_callback_query(call.id)
+            web_id = data.split('_')[2]
+            session = _edit_sessions.get(call.message.chat.id)
+            if not session or not session.get('all_entries'):
+                bot.send_message(call.message.chat.id, "❌ Sesi edit telah berakhir. Silakan buka kembali menu /logbook.")
+                return
+
+            selected_entry = None
+            for e in session['all_entries']:
+                if str(e.get('web_id')) == str(web_id):
+                    selected_entry = e
+                    break
+
+            if not selected_entry:
+                bot.send_message(call.message.chat.id, "❌ Entri logbook tidak ditemukan.")
+                return
+
+            session['web_id'] = str(selected_entry['web_id'])
+            session['tanggal'] = str(selected_entry.get('tanggal_iso', ''))
+            session['jam_masuk'] = str(selected_entry.get('jam_masuk') or '07:10')
+            session['jam_pulang'] = str(selected_entry.get('jam_pulang') or '16:25')
+            session['deskripsi'] = str(selected_entry.get('pekerjaan') or '')
+            session['keterangan'] = str(selected_entry.get('keterangan') or 'hadir')
+            session['original'] = {
+                'jam_masuk': session['jam_masuk'],
+                'jam_pulang': session['jam_pulang'],
+                'deskripsi': session['deskripsi']
+            }
+
+            send_detail_view(bot, call.message.chat.id, old_message_id=call.message.message_id)
+            return
+
+        elif data == "log_edact_masuk":
+            bot.answer_callback_query(call.id)
+            session = _edit_sessions.get(call.message.chat.id)
+            if not session:
+                bot.send_message(call.message.chat.id, "❌ Sesi edit telah berakhir.")
+                return
+
+            prompt_msg = bot.send_message(
+                call.message.chat.id,
+                f"⏰ <b>Ubah Jam Masuk (Tanggal {session['tanggal']})</b>\n\n"
+                f"Jam masuk saat ini: <code>{session['jam_masuk']}</code>\n"
+                f"Silakan ketik jam masuk baru (format 24 jam <code>HH:MM</code>, contoh: <code>07:15</code>):",
+                parse_mode="HTML"
+            )
+            session['prompt_msg_id'] = prompt_msg.message_id
+            bot.register_next_step_handler(prompt_msg, handle_input_edit_masuk, bot)
+            return
+
+        elif data == "log_edact_pulang":
+            bot.answer_callback_query(call.id)
+            session = _edit_sessions.get(call.message.chat.id)
+            if not session:
+                bot.send_message(call.message.chat.id, "❌ Sesi edit telah berakhir.")
+                return
+
+            prompt_msg = bot.send_message(
+                call.message.chat.id,
+                f"⏰ <b>Ubah Jam Pulang (Tanggal {session['tanggal']})</b>\n\n"
+                f"Jam pulang saat ini: <code>{session['jam_pulang']}</code>\n"
+                f"Silakan ketik jam pulang baru (format 24 jam <code>HH:MM</code>, contoh: <code>16:30</code>):",
+                parse_mode="HTML"
+            )
+            session['prompt_msg_id'] = prompt_msg.message_id
+            bot.register_next_step_handler(prompt_msg, handle_input_edit_pulang, bot)
+            return
+
+        elif data == "log_edact_desk":
+            bot.answer_callback_query(call.id)
+            session = _edit_sessions.get(call.message.chat.id)
+            if not session:
+                bot.send_message(call.message.chat.id, "❌ Sesi edit telah berakhir.")
+                return
+
+            prompt_msg = bot.send_message(
+                call.message.chat.id,
+                f"📝 <b>Ubah Deskripsi Pekerjaan (Tanggal {session['tanggal']})</b>\n\n"
+                f"Deskripsi saat ini:\n<i>{html.escape(session['deskripsi'])}</i>\n\n"
+                f"Silakan ketikkan deskripsi pekerjaan baru yang ingin Anda simpan:",
+                parse_mode="HTML"
+            )
+            session['prompt_msg_id'] = prompt_msg.message_id
+            bot.register_next_step_handler(prompt_msg, handle_input_edit_deskripsi, bot)
+            return
+
+        elif data == "log_edact_save":
+            bot.answer_callback_query(call.id)
+            session = _edit_sessions.get(call.message.chat.id)
+            if not session or not session.get('web_id'):
+                bot.send_message(call.message.chat.id, "❌ Sesi edit tidak ditemukan.")
+                return
+
+            orig = session.get('original', {})
+            masuk_changed = (session['jam_masuk'] != orig.get('jam_masuk'))
+            pulang_changed = (session['jam_pulang'] != orig.get('jam_pulang'))
+            desk_changed = (session['deskripsi'] != orig.get('deskripsi'))
+            if not (masuk_changed or pulang_changed or desk_changed):
+                bot.answer_callback_query(call.id, "Belum ada perubahan data yang dilakukan.", show_alert=True)
+                return
+
+            tgl = session.get('tanggal', '-')
+            web_id = session.get('web_id', '-')
+            masuk = session.get('jam_masuk', '07:10')
+            pulang = session.get('jam_pulang', '16:25')
+            desk = html.escape(session.get('deskripsi', '-'))
+
+            confirm_text = (
+                f"📖 <b>Konfirmasi Perubahan Logbook DERMAGA</b>\n\n"
+                f"🗓 <b>Tanggal:</b> <code>{tgl}</code> (ID: <code>#{web_id}</code>)\n"
+                f"⏰ <b>Jam Kerja:</b> <code>{masuk} - {pulang}</code>\n"
+                f"📦 <b>Proyek:</b> <b>Update Logbook</b>\n\n"
+                f"📝 <b>Ringkasan Aktivitas Terbaru:</b>\n"
+                f"{desk}\n\n"
+                f"Silakan konfirmasi untuk memperbarui data pada portal DERMAGA:"
+            )
+
+            markup = types.InlineKeyboardMarkup(row_width=3)
+            btn_confirm = types.InlineKeyboardButton("✅ Konfirmasi", callback_data="log_edact_confirmsave")
+            btn_reedit = types.InlineKeyboardButton("✏️ Ubah", callback_data="log_edact_reedit")
+            btn_cancel = types.InlineKeyboardButton("❌ Batal", callback_data="log_edact_cancel")
+            markup.add(btn_confirm, btn_reedit, btn_cancel)
+
+            try:
+                bot.delete_message(call.message.chat.id, call.message.message_id)
+            except Exception:
+                pass
+
+            bot.send_message(call.message.chat.id, confirm_text, parse_mode="HTML", reply_markup=markup)
+            return
+
+        elif data == "log_edact_confirmsave":
+            bot.answer_callback_query(call.id)
+            session = _edit_sessions.pop(call.message.chat.id, None)
+            if not session or not session.get('web_id'):
+                bot.send_message(call.message.chat.id, "❌ Sesi edit tidak ditemukan atau sudah kadaluarsa.")
+                return
+
+            try:
+                bot.edit_message_reply_markup(call.message.chat.id, call.message.message_id, reply_markup=None)
+            except Exception:
+                pass
+
+            loading = bot.send_message(
+                call.message.chat.id,
+                f"⏳ Sedang memperbarui logbook tanggal <code>{session['tanggal']}</code> (ID: #{session['web_id']}) di DERMAGA...",
+                parse_mode="HTML"
+            )
+
+            draft_payload = {
+                'chat_id': call.message.chat.id,
+                'date': session['tanggal'],
+                'commits_summary': session['deskripsi'],
+                'jam_masuk': session['jam_masuk'],
+                'jam_pulang': session['jam_pulang']
+            }
+
+            res = submit_logbook_to_dermaga(draft_payload, override_id=session['web_id'])
+
+            markup = types.InlineKeyboardMarkup()
+            markup.add(types.InlineKeyboardButton("📖 Buka Menu Logbook", callback_data="log_menu_back"))
+
+            if res['status'] == 'SUCCESS':
+                success_text = (
+                    f"🎉 <b>Logbook Berhasil Diperbarui!</b>\n\n"
+                    f"🗓 Tanggal: <code>{session['tanggal']}</code> (ID: <code>#{res['web_id']}</code>)\n"
+                    f"⏰ Jam: <code>{session['jam_masuk']} - {session['jam_pulang']}</code>\n"
+                    f"📝 Data di portal DERMAGA telah terverifikasi berhasil diperbarui."
+                )
+                bot.edit_message_text(success_text, call.message.chat.id, loading.message_id, parse_mode="HTML", reply_markup=markup)
+            else:
+                err_msg = res.get('message', 'Terjadi kesalahan')
+                bot.edit_message_text(f"❌ <b>Gagal Memperbarui Logbook:</b>\n{err_msg}", call.message.chat.id, loading.message_id, parse_mode="HTML", reply_markup=markup)
+            return
+
+        elif data == "log_edact_reedit":
+            bot.answer_callback_query(call.id)
+            send_detail_view(bot, call.message.chat.id, old_message_id=call.message.message_id)
+            return
+
+        elif data == "log_edact_backmonth":
+            bot.answer_callback_query(call.id)
+            session = _edit_sessions.get(call.message.chat.id)
+            if not session or not session.get('selected_month'):
+                text, markup = render_logbook_menu(call.message.chat.id, call.from_user.id)
+                try:
+                    bot.delete_message(call.message.chat.id, call.message.message_id)
+                except Exception:
+                    pass
+                bot.send_message(call.message.chat.id, text, parse_mode="HTML", reply_markup=markup)
+                return
+            send_month_view(bot, call.message.chat.id, session['selected_month'], old_message_id=call.message.message_id)
+            return
+
+        elif data == "log_edact_cancel":
+            bot.answer_callback_query(call.id)
+            _edit_sessions.pop(call.message.chat.id, None)
+            try:
+                bot.delete_message(call.message.chat.id, call.message.message_id)
+            except Exception:
+                pass
+            text, markup = render_logbook_menu(call.message.chat.id, call.from_user.id)
+            bot.send_message(call.message.chat.id, text, parse_mode="HTML", reply_markup=markup)
             return
 
         # --- REMINDER CALLBACKS (FILL / STOP) ---

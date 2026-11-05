@@ -159,14 +159,27 @@ def fetch_dermaga_table(chat_id: int = None, username: str = None, password: str
 
         btn_edit = tr.find(class_='btn-edit')
         web_id = btn_edit.get('data-id') if btn_edit else None
+        btn_tanggal = btn_edit.get('data-tanggal') if btn_edit else None
+        btn_masuk = btn_edit.get('data-masuk') if btn_edit else None
+        btn_pulang = btn_edit.get('data-pulang') if btn_edit else None
+        btn_deskripsi = btn_edit.get('data-deskripsi') if btn_edit else None
+        btn_keterangan = btn_edit.get('data-keterangan') if btn_edit else None
+
+        final_tgl_iso = btn_tanggal or tgl_order
+        final_masuk = btn_masuk or jam_masuk
+        final_pulang = btn_pulang or jam_pulang
+        final_deskripsi = btn_deskripsi or pekerjaan
+        final_keterangan = btn_keterangan or keterangan
 
         entries.append({
             'web_id': web_id,
-            'tanggal_iso': tgl_order,
+            'tanggal_iso': final_tgl_iso,
             'tanggal_text': tgl_text,
-            'keterangan': keterangan,
-            'jam': f"{jam_masuk} - {jam_pulang}",
-            'pekerjaan': pekerjaan,
+            'keterangan': final_keterangan,
+            'jam_masuk': final_masuk,
+            'jam_pulang': final_pulang,
+            'jam': f"{final_masuk} - {final_pulang}",
+            'pekerjaan': final_deskripsi,
             'status_verif': status_verif
         })
 

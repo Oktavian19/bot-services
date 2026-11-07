@@ -9,7 +9,8 @@ from .database import (
     update_telegram_message_info, get_recent_drafts, register_user_credential,
     get_user_by_chat_id, get_user_credential, regenerate_api_token,
     delete_user_credential, get_all_users, update_user_reminder_time,
-    get_user_reminder_time, complete_reminder_for_today, stop_reminder_for_today,
+    get_user_reminder_time, update_user_reminder_days, get_user_reminder_days,
+    complete_reminder_for_today, stop_reminder_for_today,
     get_or_create_reminder_state, create_or_get_draft
 )
 from .website import submit_logbook_to_dermaga, fetch_dermaga_table, test_dermaga_login
@@ -236,6 +237,72 @@ def cancel_reminder_for_cli(bot, chat_id: int, target_date: str):
                 pass
     except Exception as e:
         print(f"[LOGBOOK-REMINDER] Gagal membatalkan pengingat untuk CLI: {e}")
+
+# --- HELPER HARI PENGINGAT LOGBOOK ---
+
+DAY_NAMES = {
+    0: "Senin", 1: "Selasa", 2: "Rabu", 3: "Kamis",
+    4: "Jumat", 5: "Sabtu", 6: "Minggu"
+}
+
+def parse_days_to_set(days_str: str) -> set:
+    """Mengubah string koma (contoh: '0,1,2,3,4') menjadi set integer 0..6."""
+    if not days_str:
+        return set()
+    return {int(x.strip()) for x in str(days_str).split(',') if x.strip().isdigit() and 0 <= int(x.strip()) <= 6}
+
+def format_reminder_days_display(days_str: str) -> str:
+    """Mengubah kode hari menjadi label representatif yang mudah dibaca."""
+    active = parse_days_to_set(days_str)
+    if not active:
+        return "🔴 Nonaktif"
+    if active == {0, 1, 2, 3, 4}:
+        return "Senin - Jumat"
+    if active == {0, 1, 2, 3, 4, 5}:
+        return "Senin - Sabtu"
+    if active == {0, 1, 2, 3, 4, 5, 6}:
+        return "Setiap Hari"
+    sorted_days = sorted(list(active))
+    return ", ".join(DAY_NAMES[d] for d in sorted_days)
+
+def build_days_checklist_keyboard(days_str: str):
+    """Membuat keyboard inline checklist toggle hari interaktif beserta tombol preset."""
+    active = parse_days_to_set(days_str)
+    markup = types.InlineKeyboardMarkup()
+
+    # Baris 1: Senin, Selasa, Rabu
+    row1 = []
+    for d in [0, 1, 2]:
+        icon = "✅" if d in active else "⬜"
+        row1.append(types.InlineKeyboardButton(f"{icon} {DAY_NAMES[d]}", callback_data=f"log_daytg_{d}"))
+    markup.row(*row1)
+
+    # Baris 2: Kamis, Jumat, Sabtu
+    row2 = []
+    for d in [3, 4, 5]:
+        icon = "✅" if d in active else "⬜"
+        row2.append(types.InlineKeyboardButton(f"{icon} {DAY_NAMES[d]}", callback_data=f"log_daytg_{d}"))
+    markup.row(*row2)
+
+    # Baris 3: Minggu
+    icon_sun = "✅" if 6 in active else "⬜"
+    markup.row(types.InlineKeyboardButton(f"{icon_sun} Minggu", callback_data="log_daytg_6"))
+
+    # Baris 4: Preset Hari Kerja
+    markup.row(
+        types.InlineKeyboardButton("⚡ Senin - Jumat", callback_data="log_dayps_weekdays"),
+        types.InlineKeyboardButton("⚡ Senin - Sabtu", callback_data="log_dayps_6days")
+    )
+
+    # Baris 5: Preset Setiap Hari & Matikan
+    markup.row(
+        types.InlineKeyboardButton("⚡ Setiap Hari", callback_data="log_dayps_all"),
+        types.InlineKeyboardButton("❌ Matikan Semua", callback_data="log_dayps_none")
+    )
+
+    # Baris 6: Selesai / Kembali ke Menu
+    markup.row(types.InlineKeyboardButton("💾 Selesai & Kembali", callback_data="log_menu_back"))
+    return markup
 
 # --- MANAJEMEN SESI EDIT LOGBOOK INTERAKTIF ---
 
@@ -536,11 +603,14 @@ def render_logbook_menu(chat_id: int, user_id: int = None) -> tuple:
     username_str = user_meta['username'] if user_meta else "(Admin Mode)"
     token_str = (user_meta['api_token'][:8] + "..." + user_meta['api_token'][-6:]) if (user_meta and user_meta.get('api_token')) else "-"
     reminder_time_str = user_meta.get('reminder_time', '16:05') if user_meta else '16:05'
+    reminder_days_str = user_meta.get('reminder_days', '0,1,2,3,4') if user_meta else '0,1,2,3,4'
+    reminder_days_display = format_reminder_days_display(reminder_days_str)
 
     text = (
         f"📖 <b>Pusat Kendali Logbook DERMAGA</b>\n"
         f"👤 Akun DERMAGA: <code>{username_str}</code>\n"
         f"⏰ Jam Pengingat: <b>{reminder_time_str} WIB</b>\n"
+        f"🗓 Hari Pengingat: <b>{reminder_days_display}</b>\n"
         f"🔑 Token CLI: <code>{token_str}</code>\n\n"
         f"<b>Riwayat Draf Anda Terakhir:</b>\n"
     )
@@ -570,12 +640,14 @@ def render_logbook_menu(chat_id: int, user_id: int = None) -> tuple:
     btn_cek = types.InlineKeyboardButton("📋 Cek Logbook", callback_data="log_menu_cek")
     btn_edit = types.InlineKeyboardButton("✏️ Edit Logbook", callback_data="log_menu_edit")
     btn_token = types.InlineKeyboardButton("🔑 Token CLI", callback_data="log_menu_token")
-    btn_set_jam = types.InlineKeyboardButton("⏰ Jam Pengingat", callback_data="log_menu_set_jam")
     btn_refresh = types.InlineKeyboardButton("🔄 Refresh", callback_data="log_menu_refresh")
+    btn_set_jam = types.InlineKeyboardButton("⏰ Jam Pengingat", callback_data="log_menu_set_jam")
+    btn_set_hari = types.InlineKeyboardButton("🗓 Hari Pengingat", callback_data="log_menu_set_hari")
     btn_hapus = types.InlineKeyboardButton("🗑️ Hapus Akun", callback_data="log_menu_hapus")
     markup.add(btn_cek, btn_edit)
-    markup.add(btn_token, btn_set_jam)
-    markup.add(btn_refresh, btn_hapus)
+    markup.add(btn_token, btn_refresh)
+    markup.add(btn_set_jam, btn_set_hari)
+    markup.add(btn_hapus)
 
     if admin:
         btn_admin = types.InlineKeyboardButton("👥 Daftar Pengguna (Admin)", callback_data="log_menu_admin_users")
@@ -788,6 +860,87 @@ def init_logbook(bot):
             reply_markup=markup
         )
 
+    @bot.message_handler(commands=['set_hari_logbook', 'hari_logbook'])
+    def cmd_set_hari_logbook(message):
+        user = get_user_by_chat_id(message.chat.id)
+        if not user:
+            bot.send_message(
+                message.chat.id,
+                "⚠️ Akun Anda belum terdaftar.\n"
+                "Gunakan <code>/daftar_logbook &lt;username&gt; &lt;password&gt;</code> untuk mendaftar.",
+                parse_mode="HTML"
+            )
+            return
+
+        parts = message.text.split(maxsplit=1)
+        if len(parts) < 2:
+            current_days = user.get('reminder_days', '0,1,2,3,4')
+            text = (
+                f"🗓 <b>Pengaturan Hari Pengingat Logbook</b>\n\n"
+                f"Jadwal aktif saat ini: <b>{format_reminder_days_display(current_days)}</b>\n\n"
+                f"<b>Pilihan Preset:</b>\n"
+                f"• <code>/set_hari_logbook senin-jumat</code> (Hari kerja standard)\n"
+                f"• <code>/set_hari_logbook senin-sabtu</code> (6 hari kerja)\n"
+                f"• <code>/set_hari_logbook setiap-hari</code> (Semua hari termasuk akhir pekan)\n"
+                f"• <code>/set_hari_logbook nonaktif</code> (Matikan pengingat)\n\n"
+                f"<i>Atau gunakan tombol checklist interaktif di bawah:</i>"
+            )
+            markup = types.InlineKeyboardMarkup()
+            markup.add(types.InlineKeyboardButton("🗓 Buka Checklist Hari", callback_data="log_menu_set_hari"))
+            markup.add(types.InlineKeyboardButton("📖 Kembali ke Menu Logbook", callback_data="log_menu_back"))
+            bot.send_message(message.chat.id, text, parse_mode="HTML", reply_markup=markup)
+            return
+
+        arg = parts[1].strip().lower().replace("_", "-")
+        DAY_ALIASES = {
+            "senin": 0, "sen": 0, "mon": 0, "monday": 0,
+            "selasa": 1, "sel": 1, "tue": 1, "tuesday": 1,
+            "rabu": 2, "rab": 2, "wed": 2, "wednesday": 2,
+            "kamis": 3, "kam": 3, "thu": 3, "thursday": 3,
+            "jumat": 4, "jum": 4, "fri": 4, "friday": 4,
+            "sabtu": 5, "sab": 5, "sat": 5, "saturday": 5,
+            "minggu": 6, "min": 6, "sun": 6, "sunday": 6
+        }
+
+        if arg in ("senin-jumat", "weekday", "weekdays", "kerja"):
+            new_days = "0,1,2,3,4"
+        elif arg in ("senin-sabtu", "6hari", "6-hari"):
+            new_days = "0,1,2,3,4,5"
+        elif arg in ("setiap-hari", "semua", "all", "daily"):
+            new_days = "0,1,2,3,4,5,6"
+        elif arg in ("nonaktif", "off", "mati", "none", "kosong"):
+            new_days = ""
+        else:
+            tokens = [t.strip() for t in arg.replace(" ", ",").split(",") if t.strip()]
+            matched = set()
+            for t in tokens:
+                if t in DAY_ALIASES:
+                    matched.add(DAY_ALIASES[t])
+                elif t.isdigit() and 0 <= int(t) <= 6:
+                    matched.add(int(t))
+            if matched:
+                new_days = ",".join(str(d) for d in sorted(list(matched)))
+            else:
+                bot.send_message(
+                    message.chat.id,
+                    "❌ Pilihan hari tidak dikenali.\n"
+                    "Gunakan: <code>senin-jumat</code>, <code>senin-sabtu</code>, <code>setiap-hari</code>, <code>nonaktif</code>, "
+                    "atau sebutkan nama hari dipisah koma (contoh: <code>senin,rabu,jumat</code>).",
+                    parse_mode="HTML"
+                )
+                return
+
+        update_user_reminder_days(message.chat.id, new_days)
+        markup = types.InlineKeyboardMarkup()
+        markup.add(types.InlineKeyboardButton("📖 Kembali ke Menu Logbook", callback_data="log_menu_back"))
+        bot.send_message(
+            message.chat.id,
+            f"✅ <b>Hari Pengingat Berhasil Diubah!</b>\n\n"
+            f"Jadwal pengingat Anda sekarang: <b>{format_reminder_days_display(new_days)}</b>.",
+            parse_mode="HTML",
+            reply_markup=markup
+        )
+
     @bot.message_handler(commands=['hapus_akun_logbook'])
     def cmd_hapus_akun(message):
         user = get_user_by_chat_id(message.chat.id)
@@ -955,6 +1108,91 @@ def init_logbook(bot):
             markup.add(types.InlineKeyboardButton("❌ Batal", callback_data="log_menu_back"))
             msg = bot.send_message(call.message.chat.id, text, parse_mode="HTML", reply_markup=markup)
             bot.register_next_step_handler(msg, handle_set_jam_input, bot)
+            return
+
+        elif data == "log_menu_set_hari":
+            bot.answer_callback_query(call.id)
+            user = get_user_by_chat_id(call.message.chat.id)
+            if not user:
+                markup = types.InlineKeyboardMarkup()
+                markup.add(types.InlineKeyboardButton("⬅️ Kembali ke Menu Logbook", callback_data="log_menu_back"))
+                bot.edit_message_text("⚠️ Akun Anda belum terdaftar.", call.message.chat.id, call.message.message_id, reply_markup=markup)
+                return
+
+            days_str = get_user_reminder_days(call.message.chat.id)
+            days_display = format_reminder_days_display(days_str)
+            text = (
+                f"🗓 <b>Atur Hari Pengingat Logbook</b>\n\n"
+                f"Hari aktif saat ini: <b>{days_display}</b>\n\n"
+                f"Klik tombol hari di bawah untuk mengaktifkan (✅) atau menonaktifkan (⬜), "
+                f"atau pilih salah satu tombol preset cepat:"
+            )
+            markup = build_days_checklist_keyboard(days_str)
+            try:
+                bot.edit_message_text(text, call.message.chat.id, call.message.message_id, parse_mode="HTML", reply_markup=markup)
+            except Exception:
+                bot.send_message(call.message.chat.id, text, parse_mode="HTML", reply_markup=markup)
+            return
+
+        elif data.startswith('log_daytg_'):
+            bot.answer_callback_query(call.id)
+            try:
+                target_day = int(data.split('_')[2])
+            except (IndexError, ValueError):
+                return
+            days_str = get_user_reminder_days(call.message.chat.id)
+            active_set = parse_days_to_set(days_str)
+            if target_day in active_set:
+                active_set.remove(target_day)
+            else:
+                active_set.add(target_day)
+
+            sorted_days = sorted(list(active_set))
+            new_days_str = ",".join(str(d) for d in sorted_days)
+            update_user_reminder_days(call.message.chat.id, new_days_str)
+
+            days_display = format_reminder_days_display(new_days_str)
+            text = (
+                f"🗓 <b>Atur Hari Pengingat Logbook</b>\n\n"
+                f"Hari aktif saat ini: <b>{days_display}</b>\n\n"
+                f"Klik tombol hari di bawah untuk mengaktifkan (✅) atau menonaktifkan (⬜), "
+                f"atau pilih salah satu tombol preset cepat:"
+            )
+            markup = build_days_checklist_keyboard(new_days_str)
+            try:
+                bot.edit_message_text(text, call.message.chat.id, call.message.message_id, parse_mode="HTML", reply_markup=markup)
+            except Exception:
+                pass
+            return
+
+        elif data.startswith('log_dayps_'):
+            bot.answer_callback_query(call.id)
+            preset = data.split('_')[2]
+            if preset == "weekdays":
+                new_days_str = "0,1,2,3,4"
+            elif preset == "6days":
+                new_days_str = "0,1,2,3,4,5"
+            elif preset == "all":
+                new_days_str = "0,1,2,3,4,5,6"
+            elif preset == "none":
+                new_days_str = ""
+            else:
+                new_days_str = "0,1,2,3,4"
+
+            update_user_reminder_days(call.message.chat.id, new_days_str)
+
+            days_display = format_reminder_days_display(new_days_str)
+            text = (
+                f"🗓 <b>Atur Hari Pengingat Logbook</b>\n\n"
+                f"Hari aktif saat ini: <b>{days_display}</b>\n\n"
+                f"Klik tombol hari di bawah untuk mengaktifkan (✅) atau menonaktifkan (⬜), "
+                f"atau pilih salah satu tombol preset cepat:"
+            )
+            markup = build_days_checklist_keyboard(new_days_str)
+            try:
+                bot.edit_message_text(text, call.message.chat.id, call.message.message_id, parse_mode="HTML", reply_markup=markup)
+            except Exception:
+                pass
             return
 
         elif data == "log_menu_hapus":

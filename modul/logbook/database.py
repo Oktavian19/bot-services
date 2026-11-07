@@ -66,16 +66,19 @@ def setup_database(force_reset: bool = False):
                     default_lng TEXT DEFAULT '112.6247',
                     default_akurasi TEXT DEFAULT '15',
                     reminder_time TEXT DEFAULT '16:05',
+                    reminder_days TEXT DEFAULT '0,1,2,3,4',
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 )
             ''')
 
-            # Migrasi kolom reminder_time jika belum ada pada tabel credentials
+            # Migrasi kolom reminder_time & reminder_days jika belum ada pada tabel credentials
             cur.execute("PRAGMA table_info(logbook_credentials)")
             cred_cols = [r["name"] for r in cur.fetchall()]
             if "reminder_time" not in cred_cols:
                 conn.execute("ALTER TABLE logbook_credentials ADD COLUMN reminder_time TEXT DEFAULT '16:05'")
+            if "reminder_days" not in cred_cols:
+                conn.execute("ALTER TABLE logbook_credentials ADD COLUMN reminder_days TEXT DEFAULT '0,1,2,3,4'")
 
             conn.execute('''
                 CREATE TABLE IF NOT EXISTS logbook_reminder_state (
@@ -174,7 +177,7 @@ def get_user_by_chat_id(chat_id: int) -> dict:
     try:
         with db_session() as conn:
             cur = conn.cursor()
-            cur.execute("SELECT chat_id, username, api_token, default_lat, default_lng, default_akurasi, reminder_time, created_at, updated_at FROM logbook_credentials WHERE chat_id = ?", (chat_id,))
+            cur.execute("SELECT chat_id, username, api_token, default_lat, default_lng, default_akurasi, reminder_time, reminder_days, created_at, updated_at FROM logbook_credentials WHERE chat_id = ?", (chat_id,))
             row = cur.fetchone()
             return dict(row) if row else None
     except Exception as e:
@@ -227,7 +230,7 @@ def get_all_users() -> list:
     try:
         with db_session() as conn:
             cur = conn.cursor()
-            cur.execute("SELECT chat_id, username, api_token, reminder_time, created_at, updated_at FROM logbook_credentials ORDER BY created_at ASC")
+            cur.execute("SELECT chat_id, username, api_token, reminder_time, reminder_days, created_at, updated_at FROM logbook_credentials ORDER BY created_at ASC")
             users = []
             for r in cur.fetchall():
                 u = dict(r)
@@ -269,12 +272,41 @@ def get_user_reminder_time(chat_id: int) -> str:
         print(f"[DB-LOGBOOK - ERROR] Gagal mengambil jam pengingat user {chat_id}: {e}")
     return "16:05"
 
+def update_user_reminder_days(chat_id: int, reminder_days: str) -> bool:
+    """Memperbarui daftar hari pengingat logbook (format string koma, contoh: '0,1,2,3,4') untuk user."""
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    try:
+        with db_session() as conn:
+            conn.execute('''
+                UPDATE logbook_credentials
+                SET reminder_days = ?, updated_at = ?
+                WHERE chat_id = ?
+            ''', (reminder_days.strip(), now_str, chat_id))
+        print(f"[DB-LOGBOOK] Hari pengingat User {chat_id} diubah menjadi '{reminder_days}'.")
+        return True
+    except Exception as e:
+        print(f"[DB-LOGBOOK - ERROR] Gagal memperbarui hari pengingat user {chat_id}: {e}")
+        return False
+
+def get_user_reminder_days(chat_id: int) -> str:
+    """Mengambil hari pengingat logbook user (default '0,1,2,3,4' yaitu Senin-Jumat)."""
+    try:
+        with db_session() as conn:
+            cur = conn.cursor()
+            cur.execute("SELECT reminder_days FROM logbook_credentials WHERE chat_id = ?", (chat_id,))
+            row = cur.fetchone()
+            if row and row["reminder_days"] is not None:
+                return str(row["reminder_days"]).strip()
+    except Exception as e:
+        print(f"[DB-LOGBOOK - ERROR] Gagal mengambil hari pengingat user {chat_id}: {e}")
+    return "0,1,2,3,4"
+
 def get_active_reminder_users() -> list:
     """Mengambil daftar seluruh user yang memiliki kredensial logbook aktif."""
     try:
         with db_session() as conn:
             cur = conn.cursor()
-            cur.execute("SELECT chat_id, username, COALESCE(reminder_time, '16:05') as reminder_time FROM logbook_credentials")
+            cur.execute("SELECT chat_id, username, COALESCE(reminder_time, '16:05') as reminder_time, COALESCE(reminder_days, '0,1,2,3,4') as reminder_days FROM logbook_credentials")
             return [dict(r) for r in cur.fetchall()]
     except Exception as e:
         print(f"[DB-LOGBOOK - ERROR] Gagal mengambil user pengingat: {e}")

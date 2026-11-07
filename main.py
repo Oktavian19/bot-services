@@ -34,6 +34,7 @@ def setup_bot_commands():
         types.BotCommand("bensin", "Catatan konsumsi & riwayat BBM"),
         types.BotCommand("logbook", "Pusat kendali logbook DERMAGA"),
         types.BotCommand("set_jam_logbook", "Atur jam pengingat logbook harian"),
+        types.BotCommand("set_hari_logbook", "Atur hari pengingat logbook (default: Senin-Jumat)"),
     ]
     bot.set_my_commands(commands)
     print("[+] Menu rekomendasi command berhasil diterapkan!")

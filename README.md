@@ -65,6 +65,7 @@ bot-services/
 │   │   ├── main.py          #   Interactive Telegram commands, callbacks & in-place menu navigation
 │   │   ├── database.py      #   Multi-user SQLite schema, credentials encryption & token management
 │   │   ├── server.py        #   HTTP API receiver with Bearer token authentication
+│   │   ├── scheduler.py     #   Background reminder scheduler thread with randomized backoff & custom day filter
 │   │   └── website.py       #   Web scraping & submission with coordinates and live verification
 │   ├── jaringan/            # Network uptime monitoring
 │   │   ├── main.py          #   Ping loop, speedtest command
@@ -89,6 +90,7 @@ bot-services/
 | `/logbook` | Logbook | Interactive logbook control center with in-place action buttons |
 | `/daftar_logbook <user> <pass>` | Logbook | Register or update DERMAGA credentials; verifies login & returns CLI API token |
 | `/set_jam_logbook <HH:MM>` | Logbook | Set daily logbook reminder time (default: 16:05 WIB) |
+| `/set_hari_logbook <pilihan>` | Logbook | Set active reminder days (e.g. `senin-jumat`, `setiap-hari`, `nonaktif`) |
 | `/token_logbook` | Logbook | View your CLI API token or generate a new one |
 | `/cek_logbook` | Logbook | View your recent logbook entries scraped directly from DERMAGA |
 | `/hapus_akun_logbook` | Logbook | Delete your registered account & credentials from the bot |

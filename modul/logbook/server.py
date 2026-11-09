@@ -88,6 +88,66 @@ class LogbookRequestHandler(http.server.BaseHTTPRequestHandler):
         jam_masuk = str(payload.get('jam_masuk') or '07:10')
         jam_pulang = str(payload.get('jam_pulang') or '16:25')
 
+        # 3.5 Ekstrak parameter lokasi / profile jika dikirimkan oleh CLI
+        location_raw = payload.get('location') or payload.get('profile') or payload.get('location_profile')
+        target_profile = None
+        custom_lat = None
+        custom_lng = None
+        custom_akurasi = None
+
+        if isinstance(location_raw, str):
+            clean_loc = location_raw.strip().lower()
+            if clean_loc in ('office', 'kantor', 'wfo'):
+                target_profile = 'office'
+            elif clean_loc in ('home', 'rumah', 'kos', 'wfh'):
+                target_profile = 'home'
+            elif clean_loc in ('other', 'lain', 'klien'):
+                target_profile = 'other'
+            elif ',' in clean_loc or ' ' in clean_loc:
+                try:
+                    from .main import parse_coordinates_input
+                    parsed = parse_coordinates_input(clean_loc)
+                    if parsed:
+                        custom_lat = f"{parsed[0]:.6f}"
+                        custom_lng = f"{parsed[1]:.6f}"
+                        custom_akurasi = str(int(round(parsed[2])))
+                except Exception:
+                    pass
+
+        elif isinstance(location_raw, dict):
+            if 'profile' in location_raw and isinstance(location_raw['profile'], str):
+                p = location_raw['profile'].strip().lower()
+                if p in ('office', 'wfo', 'kantor'): target_profile = 'office'
+                elif p in ('home', 'wfh', 'rumah', 'kos'): target_profile = 'home'
+                elif p in ('other', 'lain', 'klien'): target_profile = 'other'
+
+            c_lat = location_raw.get('lat') or location_raw.get('latitude')
+            c_lng = location_raw.get('lng') or location_raw.get('longitude')
+            c_acc = location_raw.get('akurasi') or location_raw.get('accuracy')
+            if c_lat is not None and c_lng is not None:
+                try:
+                    f_lat = float(c_lat)
+                    f_lng = float(c_lng)
+                    if -90.0 <= f_lat <= 90.0 and -180.0 <= f_lng <= 180.0:
+                        custom_lat = f"{f_lat:.6f}"
+                        custom_lng = f"{f_lng:.6f}"
+                        custom_akurasi = str(int(round(float(c_acc)))) if c_acc else "15"
+                except (ValueError, TypeError):
+                    pass
+
+        # Cek jika ada field latitude/longitude langsung di root payload
+        if not custom_lat and ('latitude' in payload or 'lat' in payload) and ('longitude' in payload or 'lng' in payload):
+            try:
+                f_lat = float(payload.get('latitude') or payload.get('lat'))
+                f_lng = float(payload.get('longitude') or payload.get('lng'))
+                f_acc = payload.get('akurasi') or payload.get('accuracy')
+                if -90.0 <= f_lat <= 90.0 and -180.0 <= f_lng <= 180.0:
+                    custom_lat = f"{f_lat:.6f}"
+                    custom_lng = f"{f_lng:.6f}"
+                    custom_akurasi = str(int(round(float(f_acc)))) if f_acc else "15"
+            except (ValueError, TypeError):
+                pass
+
         # 4. Simpan ke database dengan asosiasi chat_id user
         try:
             draft, is_new = create_or_get_draft(
@@ -98,7 +158,11 @@ class LogbookRequestHandler(http.server.BaseHTTPRequestHandler):
                 commits_summary=summary,
                 raw_metadata=commits,
                 jam_masuk=jam_masuk,
-                jam_pulang=jam_pulang
+                jam_pulang=jam_pulang,
+                location_profile=target_profile,
+                custom_lat=custom_lat,
+                custom_lng=custom_lng,
+                custom_akurasi=custom_akurasi
             )
 
             print(f"[LOGBOOK-API] Draf #{draft['id']} (is_new={is_new}) diterima dari remote client untuk User {chat_id}.")

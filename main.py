@@ -35,6 +35,7 @@ def setup_bot_commands():
         types.BotCommand("logbook", "Pusat kendali logbook DERMAGA"),
         types.BotCommand("set_jam_logbook", "Atur jam pengingat logbook harian"),
         types.BotCommand("set_hari_logbook", "Atur hari pengingat logbook (default: Senin-Jumat)"),
+        types.BotCommand("set_lokasi_logbook", "Atur koordinat GPS lokasi magang"),
     ]
     bot.set_my_commands(commands)
     print("[+] Menu rekomendasi command berhasil diterapkan!")

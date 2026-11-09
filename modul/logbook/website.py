@@ -1,11 +1,13 @@
 import os
 import re
+import math
+import random
 import socket
 import urllib3.util.connection as urllib3_cn
 import requests
 from bs4 import BeautifulSoup
 from datetime import datetime
-from .database import get_user_credential, get_user_by_chat_id
+from .database import get_user_credential, get_user_by_chat_id, get_user_location, get_draft_submission_location
 from .sync import get_user_lock
 
 # --- PATCH FORCE IPV4 ---
@@ -230,6 +232,39 @@ def extract_feedback_message(html_text: str) -> tuple:
 
     return None, ""
 
+def apply_gps_jitter(lat_str: str, lng_str: str, min_radius_m: float = 2.0, max_radius_m: float = 5.0) -> tuple:
+    """
+    Menghasilkan koordinat realistis dengan deviasi acak (micro-jitter) radius 2-5 meter
+    dan akurasi natural 8-15 meter untuk mencegah deteksi bot.
+    Mengembalikan (jittered_lat: str, jittered_lng: str, jittered_akurasi: str, drift_m: float).
+    """
+    try:
+        lat0 = float(lat_str)
+        lng0 = float(lng_str)
+    except (ValueError, TypeError):
+        return str(lat_str), str(lng_str), "15", 0.0
+
+    # Pilih radius acak antara min_radius_m s.d max_radius_m
+    r = random.uniform(min_radius_m, max_radius_m)
+    theta = random.uniform(0.0, 2.0 * math.pi)
+
+    dx = r * math.cos(theta)  # timur-barat (meter)
+    dy = r * math.sin(theta)  # utara-selatan (meter)
+
+    meters_per_deg_lat = 111139.0
+    meters_per_deg_lng = 111139.0 * math.cos(math.radians(lat0))
+    if abs(meters_per_deg_lng) < 1e-6:
+        meters_per_deg_lng = 111139.0
+
+    d_lat = dy / meters_per_deg_lat
+    d_lng = dx / meters_per_deg_lng
+
+    jittered_lat = f"{lat0 + d_lat:.6f}"
+    jittered_lng = f"{lng0 + d_lng:.6f}"
+    jittered_akurasi = str(random.randint(8, 15))
+
+    return jittered_lat, jittered_lng, jittered_akurasi, r
+
 def submit_logbook_to_dermaga(draft_dict: dict, override_id: str = None, force: bool = False):
     """
     Mengeksekusi pengisian logbook ke portal DERMAGA dengan akun spesifik user dan verifikasi nyata.
@@ -242,11 +277,12 @@ def submit_logbook_to_dermaga(draft_dict: dict, override_id: str = None, force: 
     jam_masuk = draft_dict.get('jam_masuk') or '07:10'
     jam_pulang = draft_dict.get('jam_pulang') or '16:25'
 
-    # Ambil metadata lokasi user jika ada, fallback ke default
-    user_meta = get_user_by_chat_id(chat_id) if chat_id else None
-    default_lat = (user_meta.get('default_lat') if user_meta else None) or os.environ.get('DERMAGA_DEFAULT_LAT', '-7.5815')
-    default_lng = (user_meta.get('default_lng') if user_meta else None) or os.environ.get('DERMAGA_DEFAULT_LNG', '112.6247')
-    default_akurasi = (user_meta.get('default_akurasi') if user_meta else None) or os.environ.get('DERMAGA_DEFAULT_AKURASI', '15')
+    # Ambil lokasi submit draf (koordinat kustom jika ada, atau sesuai profil office/home/other)
+    loc = get_draft_submission_location(draft_dict)
+    default_lat = loc['lat']
+    default_lng = loc['lng']
+    default_akurasi = loc['akurasi']
+    prof_name = loc.get('profile_name', 'Default')
 
     user_lock = get_user_lock(chat_id) if chat_id else None
 
@@ -269,13 +305,17 @@ def submit_logbook_to_dermaga(draft_dict: dict, override_id: str = None, force: 
             csrf_input = soup.find('input', {'name': 'csrf_test_name'})
             csrf_token = csrf_input['value'] if csrf_input else ''
 
+        # Terapkan natural GPS micro-jittering (radius 2-5m, akurasi 8-15m)
+        sub_lat, sub_lng, sub_akurasi, drift_m = apply_gps_jitter(default_lat, default_lng, 2.0, 5.0)
+        print(f"[LOGBOOK-SUBMIT] GPS Jitter diterapkan untuk User {chat_id} (Profil: {prof_name}): base=({default_lat}, {default_lng}) -> submit=({sub_lat}, {sub_lng}), drift={drift_m:.2f}m, akurasi={sub_akurasi}m")
+
         payload = {
             'csrf_test_name': csrf_token,
             'id': override_id if override_id else (mon_info['existing_entry']['web_id'] if (force and mon_info['exists']) else ''),
             'keterangan': 'hadir',
-            'latitude': default_lat,
-            'longitude': default_lng,
-            'akurasi': default_akurasi,
+            'latitude': sub_lat,
+            'longitude': sub_lng,
+            'akurasi': sub_akurasi,
             'jam_masuk': jam_masuk,
             'jam_pulang': jam_pulang,
             'deskripsi': summary

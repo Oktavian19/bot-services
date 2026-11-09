@@ -1,7 +1,9 @@
 import os
+import re
 import json
 import html
 import time
+import requests
 from telebot import types
 from datetime import datetime
 from .database import (
@@ -10,6 +12,10 @@ from .database import (
     get_user_by_chat_id, get_user_credential, regenerate_api_token,
     delete_user_credential, get_all_users, update_user_reminder_time,
     get_user_reminder_time, update_user_reminder_days, get_user_reminder_days,
+    update_user_location, get_user_location,
+    PROFILE_DEFINITIONS, get_user_location_profiles, get_active_location_profile,
+    set_active_location_profile, save_location_profile, update_draft_location_profile,
+    get_draft_submission_location,
     complete_reminder_for_today, stop_reminder_for_today,
     get_or_create_reminder_state, create_or_get_draft
 )
@@ -71,10 +77,18 @@ def format_draft_message(draft: dict) -> str:
 
     commits_text = "\n".join(commits_list) if commits_list else "<i>Tidak ada metadata commit detail.</i>"
 
+    # Lokasi submit draft (custom CLI atau profil office/home/other)
+    loc = get_draft_submission_location(draft)
+    prof_name = loc.get('profile_name', '🏢 Kantor (WFO)')
+    lat_str = loc.get('lat', '-')
+    lng_str = loc.get('lng', '-')
+    maps_link = f"<a href=\"https://www.google.com/maps?q={lat_str},{lng_str}\"><code>{lat_str}, {lng_str}</code></a>"
+
     text = (
         f"📖 <b>Draf Logbook Harian</b>\n\n"
         f"🗓 <b>Tanggal:</b> <code>{date}</code>\n"
         f"⏰ <b>Jam Kerja:</b> <code>{jam_masuk} - {jam_pulang}</code>\n"
+        f"📍 <b>Lokasi Submit:</b> <b>{prof_name}</b> ({maps_link})\n"
         f"📦 <b>Proyek:</b> <b>{projects_str}</b>\n\n"
         f"📝 <b>Ringkasan Aktivitas:</b>\n"
         f"{summary}\n\n"
@@ -84,12 +98,25 @@ def format_draft_message(draft: dict) -> str:
     )
     return text
 
-def build_draft_keyboard(draft_id: int):
-    markup = types.InlineKeyboardMarkup(row_width=3)
+def build_draft_keyboard(draft_id: int, current_profile: str = 'office'):
+    markup = types.InlineKeyboardMarkup()
     btn_confirm = types.InlineKeyboardButton("✅ Konfirmasi", callback_data=f"log_confirm_{draft_id}")
     btn_edit = types.InlineKeyboardButton("✏️ Ubah", callback_data=f"log_edit_{draft_id}")
     btn_cancel = types.InlineKeyboardButton("❌ Batal", callback_data=f"log_cancel_{draft_id}")
-    markup.add(btn_confirm, btn_edit, btn_cancel)
+    markup.row(btn_confirm, btn_edit, btn_cancel)
+
+    # Baris tombol switch lokasi draf
+    switch_btns = []
+    if current_profile != 'office':
+        switch_btns.append(types.InlineKeyboardButton("🏢 Switch: Kantor", callback_data=f"log_draft_loc_{draft_id}_office"))
+    if current_profile != 'home':
+        switch_btns.append(types.InlineKeyboardButton("🏠 Switch: WFH", callback_data=f"log_draft_loc_{draft_id}_home"))
+    if current_profile != 'other':
+        switch_btns.append(types.InlineKeyboardButton("📍 Switch: Lain", callback_data=f"log_draft_loc_{draft_id}_other"))
+
+    if switch_btns:
+        markup.row(*switch_btns)
+
     return markup
 
 def send_draft_confirmation(bot, draft_id: int):
@@ -107,8 +134,10 @@ def send_draft_confirmation(bot, draft_id: int):
         print(f"[LOGBOOK - WARN] Tidak ada target chat_id untuk draf #{draft_id}, notifikasi dilewati.")
         return
 
+    loc = get_draft_submission_location(draft)
+    prof_key = loc.get('profile_key') or 'office'
     text = format_draft_message(draft)
-    markup = build_draft_keyboard(draft_id)
+    markup = build_draft_keyboard(draft_id, prof_key)
 
     try:
         msg = bot.send_message(chat_id, text, parse_mode="HTML", reply_markup=markup)
@@ -136,8 +165,10 @@ def handle_edit_input(message, bot, draft_id: int):
     update_draft_summary(draft_id, new_text)
     updated_draft = get_draft(draft_id)
 
+    loc = get_draft_submission_location(updated_draft)
+    prof_key = loc.get('profile_key') or 'office'
     text = format_draft_message(updated_draft)
-    markup = build_draft_keyboard(draft_id)
+    markup = build_draft_keyboard(draft_id, prof_key)
 
     bot.send_message(
         message.chat.id,
@@ -185,6 +216,236 @@ def handle_set_jam_input(message, bot):
         reply_markup=markup
     )
 
+def parse_coordinates_input(text: str):
+    """
+    Mencoba mengekstrak lat, lng, dan akurasi (opsional) dari teks atau URL Google Maps.
+    Mengembalikan (lat: float, lng: float, akurasi: float) atau None jika tidak valid.
+    """
+    text = (text or "").strip()
+    if not text:
+        return None
+
+    # 1. Cek apakah ini shortlink Google Maps (maps.app.goo.gl atau goo.gl/maps)
+    if 'maps.app.goo.gl' in text or 'goo.gl/maps' in text:
+        try:
+            match_url = re.search(r'https?://[^\s]+', text)
+            if match_url:
+                resp = requests.get(match_url.group(0), allow_redirects=True, timeout=5)
+                text = resp.url
+        except Exception as e:
+            print(f"[LOGBOOK-LOCATION] Gagal resolve shortlink maps: {e}")
+
+    # 2. Cek apakah URL Google Maps mengandung koordinat:
+    # Contoh: /@lat,lng atau ?q=lat,lng atau /place/lat,lng atau /search/lat,lng
+    url_match = re.search(r'[@\?&]q?=?(-?\d+\.\d+),(-?\d+\.\d+)', text)
+    if url_match:
+        try:
+            lat = float(url_match.group(1))
+            lng = float(url_match.group(2))
+            if -90.0 <= lat <= 90.0 and -180.0 <= lng <= 180.0:
+                return lat, lng, 15.0
+        except ValueError:
+            pass
+
+    # 3. Format teks langsung: "-7.9467, 112.6156" atau "-7.9467 112.6156" atau "-7.9467, 112.6156, 15"
+    clean = text.replace('(', '').replace(')', '').replace(';', ',').replace(',', ' ')
+    parts = [p.strip() for p in clean.split() if p.strip()]
+    if len(parts) >= 2:
+        try:
+            lat = float(parts[0])
+            lng = float(parts[1])
+            akurasi = float(parts[2]) if len(parts) >= 3 else 15.0
+            if -90.0 <= lat <= 90.0 and -180.0 <= lng <= 180.0:
+                akurasi = max(1.0, min(100.0, akurasi))
+                return lat, lng, akurasi
+        except ValueError:
+            return None
+
+    return None
+
+def handle_set_lokasi_input(message, bot):
+    """Handler penerima lokasi GPS baru (via Telegram Location pin atau teks/URL koordinat)."""
+    # 1. Jika dikirim melalui pin lokasi Telegram (Native Location)
+    if getattr(message, 'location', None) is not None:
+        lat = message.location.latitude
+        lng = message.location.longitude
+        akurasi = getattr(message.location, 'horizontal_accuracy', None) or 15.0
+        lat_str = f"{lat:.6f}"
+        lng_str = f"{lng:.6f}"
+        akurasi_str = f"{int(round(akurasi))}"
+
+        update_user_location(message.chat.id, lat_str, lng_str, akurasi_str)
+        maps_url = f"https://www.google.com/maps?q={lat_str},{lng_str}"
+
+        markup = types.InlineKeyboardMarkup()
+        markup.add(types.InlineKeyboardButton("📖 Kembali ke Menu Logbook", callback_data="log_menu_back"))
+
+        bot.send_message(
+            message.chat.id,
+            f"✅ <b>Lokasi GPS Berhasil Diperbarui!</b>\n\n"
+            f"📍 Koordinat: <a href=\"{maps_url}\"><code>{lat_str}, {lng_str}</code></a>\n"
+            f"🎯 Estimasi Akurasi: <b>±{akurasi_str} meter</b>\n\n"
+            f"<i>Koordinat ini akan otomatis digunakan saat submit absensi/logbook DERMAGA Anda.</i>",
+            parse_mode="HTML",
+            reply_markup=markup
+        )
+        return
+
+    # 2. Jika dikirim dalam bentuk teks
+    text = (message.text or "").strip()
+    if not text or text.startswith('/'):
+        bot.send_message(message.chat.id, "❌ Pengaturan lokasi logbook dibatalkan.")
+        return
+
+    parsed = parse_coordinates_input(text)
+    if not parsed:
+        bot.send_message(
+            message.chat.id,
+            "❌ <b>Format Koordinat Tidak Valid!</b>\n\n"
+            "Pastikan Anda mengirim:\n"
+            "• Pin lokasi langsung dari Telegram (ikon 📎 ➔ Location)\n"
+            "• Atau angka koordinat: <code>-7.9467, 112.6156</code>\n"
+            "• Atau link Google Maps tempat magang Anda.",
+            parse_mode="HTML"
+        )
+        return
+
+    lat, lng, akurasi = parsed
+    lat_str = f"{lat:.6f}"
+    lng_str = f"{lng:.6f}"
+    akurasi_str = f"{int(round(akurasi))}"
+
+    update_user_location(message.chat.id, lat_str, lng_str, akurasi_str)
+    maps_url = f"https://www.google.com/maps?q={lat_str},{lng_str}"
+
+    markup = types.InlineKeyboardMarkup()
+    markup.add(types.InlineKeyboardButton("📖 Kembali ke Menu Logbook", callback_data="log_menu_back"))
+
+    bot.send_message(
+        message.chat.id,
+        f"✅ <b>Lokasi GPS Berhasil Diperbarui!</b>\n\n"
+        f"📍 Koordinat: <a href=\"{maps_url}\"><code>{lat_str}, {lng_str}</code></a>\n"
+        f"🎯 Estimasi Akurasi: <b>±{akurasi_str} meter</b>\n\n"
+        f"<i>Koordinat ini akan otomatis digunakan saat submit absensi/logbook DERMAGA Anda.</i>",
+        parse_mode="HTML",
+        reply_markup=markup
+    )
+
+def handle_set_profile_lokasi_input(message, bot, profile_key: str):
+    """Handler penerima lokasi GPS baru untuk profil tertentu (office, home, other)."""
+    p_name = PROFILE_DEFINITIONS.get(profile_key, profile_key)
+
+    # 1. Jika dikirim melalui pin lokasi Telegram (Native Location)
+    if getattr(message, 'location', None) is not None:
+        lat = message.location.latitude
+        lng = message.location.longitude
+        akurasi = getattr(message.location, 'horizontal_accuracy', None) or 15.0
+        lat_str = f"{lat:.6f}"
+        lng_str = f"{lng:.6f}"
+        akurasi_str = f"{int(round(akurasi))}"
+
+        save_location_profile(message.chat.id, profile_key, lat_str, lng_str, akurasi_str)
+        maps_url = f"https://www.google.com/maps?q={lat_str},{lng_str}"
+
+        markup = types.InlineKeyboardMarkup()
+        markup.add(types.InlineKeyboardButton("📍 Buka Menu Lokasi GPS", callback_data="log_menu_set_lokasi"))
+        markup.add(types.InlineKeyboardButton("📖 Kembali ke Menu Logbook", callback_data="log_menu_back"))
+
+        bot.send_message(
+            message.chat.id,
+            f"✅ <b>Lokasi {p_name} Berhasil Disimpan!</b>\n\n"
+            f"📍 Koordinat: <a href=\"{maps_url}\"><code>{lat_str}, {lng_str}</code></a>\n"
+            f"🎯 Estimasi Akurasi: <b>±{akurasi_str} meter</b>",
+            parse_mode="HTML",
+            reply_markup=markup
+        )
+        return
+
+    # 2. Jika dikirim dalam bentuk teks
+    text = (message.text or "").strip()
+    if not text or text.startswith('/'):
+        bot.send_message(message.chat.id, f"❌ Pengaturan lokasi {p_name} dibatalkan.")
+        return
+
+    parsed = parse_coordinates_input(text)
+    if not parsed:
+        bot.send_message(
+            message.chat.id,
+            f"❌ <b>Format Koordinat Tidak Valid untuk {p_name}!</b>\n\n"
+            "Pastikan Anda mengirim:\n"
+            "• Pin lokasi langsung dari Telegram (ikon 📎 ➔ Location)\n"
+            "• Atau angka koordinat: <code>-7.9467, 112.6156</code>\n"
+            "• Atau link Google Maps.",
+            parse_mode="HTML"
+        )
+        return
+
+    lat, lng, akurasi = parsed
+    lat_str = f"{lat:.6f}"
+    lng_str = f"{lng:.6f}"
+    akurasi_str = f"{int(round(akurasi))}"
+
+    save_location_profile(message.chat.id, profile_key, lat_str, lng_str, akurasi_str)
+    maps_url = f"https://www.google.com/maps?q={lat_str},{lng_str}"
+
+    markup = types.InlineKeyboardMarkup()
+    markup.add(types.InlineKeyboardButton("📍 Buka Menu Lokasi GPS", callback_data="log_menu_set_lokasi"))
+    markup.add(types.InlineKeyboardButton("📖 Kembali ke Menu Logbook", callback_data="log_menu_back"))
+
+    bot.send_message(
+        message.chat.id,
+        f"✅ <b>Lokasi {p_name} Berhasil Disimpan!</b>\n\n"
+        f"📍 Koordinat: <a href=\"{maps_url}\"><code>{lat_str}, {lng_str}</code></a>\n"
+        f"🎯 Estimasi Akurasi: <b>±{akurasi_str} meter</b>",
+        parse_mode="HTML",
+        reply_markup=markup
+    )
+
+def render_locations_menu(chat_id: int) -> tuple:
+    """Helper untuk merender menu multi-profil lokasi (office, home, other)."""
+    profiles = get_user_location_profiles(chat_id)
+    active_key = get_active_location_profile(chat_id)
+
+    text = (
+        "📍 <b>Pengaturan Profil Lokasi GPS (Hybrid Magang)</b>\n\n"
+        "Pilih profil aktif untuk absensi atau atur koordinat masing-masing lokasi:\n\n"
+    )
+
+    for key, p in profiles.items():
+        is_active = (key == active_key)
+        active_badge = " <b>[AKTIF ✅]</b>" if is_active else ""
+        if p['is_set']:
+            maps_url = f"https://www.google.com/maps?q={p['lat']},{p['lng']}"
+            coord_str = f"<a href=\"{maps_url}\"><code>{p['lat']}, {p['lng']}</code></a> (±{p['akurasi']}m)"
+        else:
+            coord_str = "<i>Belum diatur</i>"
+
+        text += f"• <b>{p['profile_name']}</b>{active_badge}\n  Koordinat: {coord_str}\n\n"
+
+    text += "<i>Gunakan tombol di bawah untuk mengganti profil aktif atau mengubah koordinat:</i>"
+
+    markup = types.InlineKeyboardMarkup()
+
+    # Baris 1: Switch Profil Aktif
+    switch_btns = []
+    for key, p in profiles.items():
+        is_active = (key == active_key)
+        icon = "✅" if is_active else "🔘"
+        short_label = "Kantor" if key == "office" else ("Rumah/Kos" if key == "home" else "Lainnya")
+        switch_btns.append(types.InlineKeyboardButton(f"{icon} {short_label}", callback_data=f"log_loc_switch_{key}"))
+    markup.row(*switch_btns)
+
+    # Baris 2: Edit Koordinat Masing-Masing Profil
+    edit_btns = [
+        types.InlineKeyboardButton("✏️ Atur Kantor", callback_data="log_loc_edit_office"),
+        types.InlineKeyboardButton("✏️ Atur Rumah", callback_data="log_loc_edit_home"),
+        types.InlineKeyboardButton("✏️ Atur Lain", callback_data="log_loc_edit_other")
+    ]
+    markup.row(*edit_btns)
+
+    markup.add(types.InlineKeyboardButton("⬅️ Kembali ke Menu Logbook", callback_data="log_menu_back"))
+    return text, markup
+
 def handle_manual_logbook_input(message, bot, target_date: str):
     """Handler penerima teks aktivitas saat user klik 'Isi Logbook'."""
     text = message.text.strip() if message.text else ""
@@ -212,7 +473,9 @@ def handle_manual_logbook_input(message, bot, target_date: str):
         complete_reminder_for_today(chat_id, target_date)
 
         draft_text = format_draft_message(draft)
-        markup = build_draft_keyboard(draft['id'])
+        loc = get_draft_submission_location(draft)
+        prof_key = loc.get('profile_key') or 'office'
+        markup = build_draft_keyboard(draft['id'], prof_key)
 
         bot.send_message(
             chat_id,
@@ -605,10 +868,17 @@ def render_logbook_menu(chat_id: int, user_id: int = None) -> tuple:
     reminder_time_str = user_meta.get('reminder_time', '16:05') if user_meta else '16:05'
     reminder_days_str = user_meta.get('reminder_days', '0,1,2,3,4') if user_meta else '0,1,2,3,4'
     reminder_days_display = format_reminder_days_display(reminder_days_str)
+    loc = get_user_location(chat_id) if user_meta else {'lat': '-7.5815', 'lng': '112.6247', 'akurasi': '15', 'profile_name': '🏢 Kantor (WFO)'}
+    lat_str = loc['lat']
+    lng_str = loc['lng']
+    akurasi_str = loc['akurasi']
+    prof_name = loc.get('profile_name', '🏢 Kantor (WFO)')
+    maps_url = f"https://www.google.com/maps?q={lat_str},{lng_str}"
 
     text = (
         f"📖 <b>Pusat Kendali Logbook DERMAGA</b>\n"
         f"👤 Akun DERMAGA: <code>{username_str}</code>\n"
+        f"📍 Lokasi Aktif: <b>{prof_name}</b> (<a href=\"{maps_url}\"><code>{lat_str}, {lng_str}</code></a>)\n"
         f"⏰ Jam Pengingat: <b>{reminder_time_str} WIB</b>\n"
         f"🗓 Hari Pengingat: <b>{reminder_days_display}</b>\n"
         f"🔑 Token CLI: <code>{token_str}</code>\n\n"
@@ -643,11 +913,12 @@ def render_logbook_menu(chat_id: int, user_id: int = None) -> tuple:
     btn_refresh = types.InlineKeyboardButton("🔄 Refresh", callback_data="log_menu_refresh")
     btn_set_jam = types.InlineKeyboardButton("⏰ Jam Pengingat", callback_data="log_menu_set_jam")
     btn_set_hari = types.InlineKeyboardButton("🗓 Hari Pengingat", callback_data="log_menu_set_hari")
+    btn_set_lokasi = types.InlineKeyboardButton("📍 Lokasi GPS", callback_data="log_menu_set_lokasi")
     btn_hapus = types.InlineKeyboardButton("🗑️ Hapus Akun", callback_data="log_menu_hapus")
     markup.add(btn_cek, btn_edit)
     markup.add(btn_token, btn_refresh)
     markup.add(btn_set_jam, btn_set_hari)
-    markup.add(btn_hapus)
+    markup.add(btn_set_lokasi, btn_hapus)
 
     if admin:
         btn_admin = types.InlineKeyboardButton("👥 Daftar Pengguna (Admin)", callback_data="log_menu_admin_users")
@@ -719,10 +990,11 @@ def init_logbook(bot):
                 f"<pre>"
                 f'{{\n'
                 f'  "vps_endpoint": "{get_logbook_public_url()}",\n'
-                f'  "api_token": "{token}"\n'
+                f'  "api_token": "{token}",\n'
+                f'  "location": "office"\n'
                 f'}}'
                 f"</pre>\n"
-                f"💡 <i>Token ini unik untuk Anda. Jika lupa, cek kapan saja melalui menu <code>/logbook</code> atau tombol '🔑 Token CLI'.</i>"
+                f"💡 <i>Field <code>location</code> bersifat opsional: gunakan <code>office</code> (WFO), <code>home</code> (WFH), atau <code>other</code>. Jika tidak disertakan, bot otomatis menggunakan profil aktif Anda.</i>"
             )
             markup = types.InlineKeyboardMarkup()
             markup.add(types.InlineKeyboardButton("📖 Buka Menu Logbook", callback_data="log_menu_back"))
@@ -759,9 +1031,11 @@ def init_logbook(bot):
             f"<pre>"
             f'{{\n'
             f'  "vps_endpoint": "{get_logbook_public_url()}",\n'
-            f'  "api_token": "{token}"\n'
+            f'  "api_token": "{token}",\n'
+            f'  "location": "office"\n'
             f'}}'
-            f"</pre>"
+            f"</pre>\n"
+            f"💡 <i>Field <code>location</code> bersifat opsional: gunakan <code>office</code> (WFO), <code>home</code> (WFH), atau <code>other</code>. Jika tidak disertakan, bot otomatis menggunakan profil aktif Anda.</i>"
         )
         bot.send_message(message.chat.id, text, parse_mode="HTML", reply_markup=markup)
 
@@ -941,6 +1215,75 @@ def init_logbook(bot):
             reply_markup=markup
         )
 
+    @bot.message_handler(commands=['set_lokasi_logbook', 'lokasi_logbook', 'set_gps_logbook'])
+    def cmd_set_lokasi_logbook(message):
+        user = get_user_by_chat_id(message.chat.id)
+        if not user:
+            bot.send_message(
+                message.chat.id,
+                "⚠️ Akun Anda belum terdaftar.\n"
+                "Gunakan <code>/daftar_logbook &lt;username&gt; &lt;password&gt;</code> untuk mendaftar.",
+                parse_mode="HTML"
+            )
+            return
+
+        parts = message.text.split(maxsplit=1)
+        if len(parts) > 1:
+            param = parts[1].strip()
+            target_profile = get_active_location_profile(message.chat.id)
+            tokens = param.split()
+            if tokens and tokens[0].lower() in ('office', 'kantor', 'wfo'):
+                target_profile = 'office'
+                param = " ".join(tokens[1:])
+            elif tokens and tokens[0].lower() in ('home', 'rumah', 'kos', 'wfh'):
+                target_profile = 'home'
+                param = " ".join(tokens[1:])
+            elif tokens and tokens[0].lower() in ('other', 'lain', 'klien'):
+                target_profile = 'other'
+                param = " ".join(tokens[1:])
+
+            parsed = parse_coordinates_input(param)
+            if not parsed:
+                bot.send_message(
+                    message.chat.id,
+                    "❌ Format koordinat tidak valid.\n"
+                    "Gunakan: <code>/set_lokasi_logbook [kantor|rumah|lain] &lt;latitude&gt; &lt;longitude&gt; [akurasi]</code>\n"
+                    "Contoh: <code>/set_lokasi_logbook -7.9467 112.6156</code> atau <code>/set_lokasi_logbook rumah -7.9467 112.6156</code>",
+                    parse_mode="HTML"
+                )
+                return
+
+            lat, lng, akurasi = parsed
+            lat_str = f"{lat:.6f}"
+            lng_str = f"{lng:.6f}"
+            akurasi_str = f"{int(round(akurasi))}"
+            save_location_profile(message.chat.id, target_profile, lat_str, lng_str, akurasi_str)
+            p_name = PROFILE_DEFINITIONS.get(target_profile, target_profile)
+            maps_url = f"https://www.google.com/maps?q={lat_str},{lng_str}"
+
+            markup = types.InlineKeyboardMarkup()
+            markup.add(types.InlineKeyboardButton("📍 Buka Menu Lokasi GPS", callback_data="log_menu_set_lokasi"))
+            markup.add(types.InlineKeyboardButton("📖 Kembali ke Menu Logbook", callback_data="log_menu_back"))
+            bot.send_message(
+                message.chat.id,
+                f"✅ <b>Lokasi {p_name} Berhasil Disimpan!</b>\n\n"
+                f"📍 Koordinat: <a href=\"{maps_url}\"><code>{lat_str}, {lng_str}</code></a>\n"
+                f"🎯 Estimasi Akurasi: <b>±{akurasi_str} meter</b>",
+                parse_mode="HTML",
+                reply_markup=markup
+            )
+            return
+
+        text, markup = render_locations_menu(message.chat.id)
+        bot.send_message(message.chat.id, text, parse_mode="HTML", reply_markup=markup)
+
+    @bot.message_handler(content_types=['location'])
+    def handle_direct_location(message):
+        user = get_user_by_chat_id(message.chat.id)
+        if not user:
+            return
+        handle_set_lokasi_input(message, bot)
+
     @bot.message_handler(commands=['hapus_akun_logbook'])
     def cmd_hapus_akun(message):
         user = get_user_by_chat_id(message.chat.id)
@@ -1058,9 +1401,11 @@ def init_logbook(bot):
                 f"<pre>"
                 f'{{\n'
                 f'  "vps_endpoint": "{get_logbook_public_url()}",\n'
-                f'  "api_token": "{token_val}"\n'
+                f'  "api_token": "{token_val}",\n'
+                f'  "location": "office"\n'
                 f'}}'
-                f"</pre>"
+                f"</pre>\n"
+                f"💡 <i>Field <code>location</code> bersifat opsional: gunakan <code>office</code> (WFO), <code>home</code> (WFH), atau <code>other</code>. Jika tidak disertakan, bot otomatis menggunakan profil aktif Anda.</i>"
             )
             markup = types.InlineKeyboardMarkup()
             markup.add(types.InlineKeyboardButton("🔄 Buat Ulang Token", callback_data="log_regen_token"))
@@ -1108,6 +1453,78 @@ def init_logbook(bot):
             markup.add(types.InlineKeyboardButton("❌ Batal", callback_data="log_menu_back"))
             msg = bot.send_message(call.message.chat.id, text, parse_mode="HTML", reply_markup=markup)
             bot.register_next_step_handler(msg, handle_set_jam_input, bot)
+            return
+
+        elif data == "log_menu_set_lokasi":
+            bot.answer_callback_query(call.id)
+            user = get_user_by_chat_id(call.message.chat.id)
+            if not user:
+                markup = types.InlineKeyboardMarkup()
+                markup.add(types.InlineKeyboardButton("⬅️ Kembali ke Menu Logbook", callback_data="log_menu_back"))
+                bot.edit_message_text("⚠️ Akun Anda belum terdaftar.", call.message.chat.id, call.message.message_id, reply_markup=markup)
+                return
+
+            text, markup = render_locations_menu(call.message.chat.id)
+            try:
+                bot.edit_message_text(text, call.message.chat.id, call.message.message_id, parse_mode="HTML", reply_markup=markup)
+            except Exception:
+                bot.send_message(call.message.chat.id, text, parse_mode="HTML", reply_markup=markup)
+            return
+
+        elif data.startswith('log_loc_switch_'):
+            key = data.split('_')[3]
+            profiles = get_user_location_profiles(call.message.chat.id)
+            target_p = profiles.get(key)
+            if not target_p:
+                bot.answer_callback_query(call.id, "Profil tidak ditemukan.")
+                return
+
+            if not target_p['is_set']:
+                bot.answer_callback_query(call.id)
+                p_name = target_p['profile_name']
+                text = (
+                    f"⚠️ <b>Profil {p_name} Belum Memiliki Koordinat!</b>\n\n"
+                    f"Silakan kirimkan koordinat tempat ini agar dapat diaktifkan:\n"
+                    f"1. 📎 <b>Pin Lokasi Telegram</b> (ikon 📎 ➔ Location)\n"
+                    f"2. ✍️ <b>Teks Koordinat</b> (contoh: <code>-7.9467, 112.6156</code>)\n"
+                    f"3. 🔗 <b>Link Google Maps</b>\n\n"
+                    f"<i>Kirimkan sekarang atau klik Batal di bawah:</i>"
+                )
+                markup = types.InlineKeyboardMarkup()
+                markup.add(types.InlineKeyboardButton("❌ Batal", callback_data="log_menu_set_lokasi"))
+                msg = bot.send_message(call.message.chat.id, text, parse_mode="HTML", reply_markup=markup)
+                bot.register_next_step_handler(msg, handle_set_profile_lokasi_input, bot, key)
+                return
+
+            set_active_location_profile(call.message.chat.id, key)
+            bot.answer_callback_query(call.id, f"Profil aktif diubah ke {target_p['profile_name']}")
+            text, markup = render_locations_menu(call.message.chat.id)
+            try:
+                bot.edit_message_text(text, call.message.chat.id, call.message.message_id, parse_mode="HTML", reply_markup=markup)
+            except Exception:
+                bot.send_message(call.message.chat.id, text, parse_mode="HTML", reply_markup=markup)
+            return
+
+        elif data.startswith('log_loc_edit_'):
+            bot.answer_callback_query(call.id)
+            key = data.split('_')[3]
+            p_name = PROFILE_DEFINITIONS.get(key, key)
+            loc = get_user_location(call.message.chat.id, profile_key=key)
+            status_loc = f"<a href=\"https://www.google.com/maps?q={loc['lat']},{loc['lng']}\"><code>{loc['lat']}, {loc['lng']}</code></a> (±{loc['akurasi']}m)" if loc.get('lat') and loc.get('lat') != '-7.5815' else "<i>Belum disetel</i>"
+
+            text = (
+                f"📍 <b>Atur Koordinat untuk {p_name}</b>\n\n"
+                f"Lokasi saat ini: {status_loc}\n\n"
+                f"Silakan kirimkan koordinat baru:\n"
+                f"1. 📎 <b>Pin Lokasi Telegram</b> (ikon 📎 ➔ Location)\n"
+                f"2. ✍️ <b>Teks Koordinat</b> (contoh: <code>-7.9467, 112.6156</code>)\n"
+                f"3. 🔗 <b>Link Google Maps</b>\n\n"
+                f"<i>Kirimkan sekarang atau klik Batal di bawah:</i>"
+            )
+            markup = types.InlineKeyboardMarkup()
+            markup.add(types.InlineKeyboardButton("❌ Batal", callback_data="log_menu_set_lokasi"))
+            msg = bot.send_message(call.message.chat.id, text, parse_mode="HTML", reply_markup=markup)
+            bot.register_next_step_handler(msg, handle_set_profile_lokasi_input, bot, key)
             return
 
         elif data == "log_menu_set_hari":
@@ -1561,12 +1978,15 @@ def init_logbook(bot):
             )
             return
 
-        # --- DRAFT CALLBACKS (SUBMIT / OVERRIDE / SKIP / EDIT / CANCEL) ---
+        # --- DRAFT CALLBACKS (SUBMIT / OVERRIDE / SKIP / EDIT / CANCEL / LOCATION SWITCH) ---
         draft_id = None
         if data.startswith(('log_confirm_', 'log_skip_', 'log_edit_', 'log_cancel_')):
             draft_id = int(data.split('_')[2])
         elif data.startswith('log_over_'):
             draft_id = int(data.split('_')[2])
+        elif data.startswith('log_draft_loc_'):
+            parts = data.split('_')
+            draft_id = int(parts[3])
 
         if not draft_id:
             bot.answer_callback_query(call.id, "Data callback tidak valid.", show_alert=True)
@@ -1671,6 +2091,30 @@ def init_logbook(bot):
             except Exception:
                 pass
             bot.send_message(call.message.chat.id, f"❌ Draf logbook #{draft_id} telah <b>dibatalkan</b>.", parse_mode="HTML")
+
+        # 6. Ganti lokasi submit draf (Switch WFO / WFH / Lain)
+        elif data.startswith('log_draft_loc_'):
+            parts = data.split('_')
+            target_profile = parts[4]
+
+            # Cek apakah koordinat target_profile sudah disetel
+            profiles = get_user_location_profiles(draft['chat_id'])
+            target_p = profiles.get(target_profile)
+            if not target_p or not target_p['is_set']:
+                p_name = PROFILE_DEFINITIONS.get(target_profile, target_profile)
+                bot.answer_callback_query(call.id, f"⚠️ Profil {p_name} belum disetel koordinatnya! Atur dulu di menu Lokasi GPS.", show_alert=True)
+                return
+
+            update_draft_location_profile(draft_id, target_profile)
+            updated_draft = get_draft(draft_id)
+            new_text = format_draft_message(updated_draft)
+            new_markup = build_draft_keyboard(draft_id, target_profile)
+            try:
+                bot.edit_message_text(new_text, call.message.chat.id, call.message.message_id, parse_mode="HTML", reply_markup=new_markup)
+            except Exception:
+                pass
+            bot.answer_callback_query(call.id, f"Lokasi draf diubah ke: {target_p['profile_name']}")
+            return
 
 def jalankan_server(bot):
     """Runner thread untuk HTTP Server receiver yang meneruskan draf baru ke Telegram."""

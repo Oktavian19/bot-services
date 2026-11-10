@@ -11,6 +11,9 @@ def get_logbook_hub_keyboard(is_admin_user: bool = False) -> InlineKeyboardMarku
     """Menu utama kendali logbook."""
     rows = [
         [
+            InlineKeyboardButton(text="✍️ Isi Logbook Hari Ini", callback_data="log_menu_isi"),
+        ],
+        [
             InlineKeyboardButton(text="📋 Cek Logbook Web", callback_data="log_menu_cek"),
             InlineKeyboardButton(text="📅 Kalender & Edit", callback_data="log_menu_edit"),
         ],

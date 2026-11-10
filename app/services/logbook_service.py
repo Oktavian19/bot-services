@@ -4,12 +4,18 @@ serta helper geocoding koordinat GPS dan pemformatan antarmuka logbook.
 """
 
 import html
+import json
+import math
+import random
 import re
 from typing import Any, List, Optional
 import aiohttp
 from bs4 import BeautifulSoup
 from app.core.logger import logger
 from app.database.logbook_repo import (
+    DEFAULT_ACCURACY,
+    DEFAULT_LAT,
+    DEFAULT_LNG,
     PROFILE_DEFINITIONS,
     get_user_credential,
     get_user_location,
@@ -76,6 +82,81 @@ def parse_coordinates_input(raw_input: str) -> Optional[tuple[float, float, floa
             return lat, lng, acc
 
     return None
+
+
+def apply_gps_jitter(
+    lat_str: str,
+    lng_str: str,
+    min_radius_m: float = 2.0,
+    max_radius_m: float = 5.0,
+) -> tuple[str, str, str, float]:
+    """
+    Menghasilkan koordinat realistis dengan deviasi acak (micro-jitter) radius 2-5 meter
+    dan akurasi natural 8-15 meter untuk mensimulasikan GPS perangkat nyata.
+    """
+    try:
+        lat0 = float(lat_str)
+        lng0 = float(lng_str)
+    except (ValueError, TypeError):
+        return str(lat_str), str(lng_str), str(DEFAULT_ACCURACY), 0.0
+
+    r = random.uniform(min_radius_m, max_radius_m)
+    theta = random.uniform(0.0, 2.0 * math.pi)
+
+    dx = r * math.cos(theta)
+    dy = r * math.sin(theta)
+
+    meters_per_deg_lat = 111139.0
+    meters_per_deg_lng = 111139.0 * math.cos(math.radians(lat0))
+    if abs(meters_per_deg_lng) < 1e-6:
+        meters_per_deg_lng = 111139.0
+
+    d_lat = dy / meters_per_deg_lat
+    d_lng = dx / meters_per_deg_lng
+
+    jittered_lat = f"{lat0 + d_lat:.6f}"
+    jittered_lng = f"{lng0 + d_lng:.6f}"
+    jittered_akurasi = str(random.randint(8, 15))
+
+    return jittered_lat, jittered_lng, jittered_akurasi, r
+
+
+def extract_feedback_message(html_text: str) -> tuple[Optional[bool], str]:
+    """Mengekstrak notifikasi SweetAlert atau script notify dari HTML response DERMAGA."""
+    if not html_text:
+        return None, ""
+
+    soup = BeautifulSoup(html_text, "html.parser")
+    for s in soup.find_all("script"):
+        txt = s.string or s.text or ""
+        if "notify(" in txt:
+            if "notify('success'" in txt or 'notify("success"' in txt:
+                m = re.search(r'notify\(\s*[\'"]success[\'"]\s*,\s*[\'"]([^\'"]+)[\'"]', txt)
+                return True, m.group(1) if m else "Logbook berhasil disimpan."
+            elif "notify('error'" in txt or 'notify("error"' in txt or "notify('warning'" in txt:
+                m = re.search(r'notify\(\s*[\'"][^\'"]+[\'"]\s*,\s*[\'"]([^\'"]+)[\'"]', txt)
+                return False, m.group(1) if m else "Gagal menyimpan logbook."
+
+        if "Swal.fire" in txt:
+            m_icon = re.search(r'icon:\s*[\'"]([^\'"]+)[\'"]', txt)
+            m_title = re.search(r'title:\s*[\'"]([^\'"]+)[\'"]', txt)
+            m_html = re.search(r'html:\s*[\'"]([^\'"]+)[\'"]', txt)
+            icon = m_icon.group(1) if m_icon else "warning"
+            title = m_title.group(1) if m_title else "Peringatan"
+            detail = m_html.group(1) if m_html else ""
+            clean_detail = re.sub(r"<[^>]+>", " ", detail).strip()
+            msg = f"{title}: {clean_detail}" if clean_detail else title
+            return (False if icon in ["warning", "error"] else True), msg
+
+    for alert in soup.find_all(class_=lambda c: c and ("alert-danger" in c or "alert-warning" in c)):
+        classes = alert.get("class", [])
+        if "d-none" not in classes:
+            txt = alert.get_text(strip=True)
+            if txt:
+                return False, txt
+
+    return None, ""
+
 
 
 # --- PORTAL DERMAGA SCRAPER (ASYNC) ---
@@ -171,6 +252,96 @@ async def fetch_dermaga_table(chat_id: int) -> List[dict[str, Any]]:
         return entries
 
 
+async def check_monitoring_today(chat_id: int, target_date: str) -> dict[str, Any]:
+    """
+    Memeriksa halaman monitoring portal DERMAGA secara real-time untuk mengecek
+    apakah logbook tanggal target_date sudah diisi.
+    Jika web gagal diakses, lakukan fallback pengecekan ke database lokal.
+    """
+    cred = await get_user_credential(chat_id)
+    if not cred:
+        return {"exists": False, "entry": None, "error": "Kredensial belum didaftarkan."}
+
+    username, password = cred
+    timeout = aiohttp.ClientTimeout(total=20)
+
+    try:
+        async with aiohttp.ClientSession(headers=DEFAULT_HEADERS, timeout=timeout) as session:
+            # 1. Login
+            async with session.get(LOGIN_URL) as resp:
+                soup = BeautifulSoup(await resp.text(), "html.parser")
+                csrf_token = soup.find("input", {"name": "csrf_test_name"})["value"]
+
+            payload = {"username": username, "password": password, "csrf_test_name": csrf_token}
+            async with session.post(LOGIN_URL, data=payload, allow_redirects=True) as login_resp:
+                if "mahasiswa" not in str(login_resp.url) and "Log Out" not in await login_resp.text():
+                    raise PermissionError("Autentikasi gagal. Kredensial DERMAGA mungkin tidak valid.")
+
+            # 2. Ambil halaman monitoring
+            async with session.get(MONITORING_URL) as mon_resp:
+                mon_soup = BeautifulSoup(await mon_resp.text(), "html.parser")
+
+            # 3. Cari entri untuk tanggal target_date
+            # A: Cek class btn-edit
+            edit_buttons = mon_soup.find_all(class_="btn-edit")
+            for btn in edit_buttons:
+                btn_date = btn.get("data-tanggal")
+                if btn_date == target_date:
+                    return {
+                        "exists": True,
+                        "entry": {
+                            "web_id": btn.get("data-id") or "-",
+                            "tanggal": btn_date,
+                            "masuk": btn.get("data-masuk") or "07:10",
+                            "pulang": btn.get("data-pulang") or "16:25",
+                            "deskripsi": btn.get("data-deskripsi") or "",
+                        },
+                        "error": None,
+                    }
+
+            # B: Cek baris tabel jika tombol edit tidak langsung cocok
+            table = mon_soup.find("table")
+            if table:
+                for tr in table.find_all("tr"):
+                    tds = tr.find_all("td")
+                    if len(tds) >= 4:
+                        tgl_cell = tds[1].text.strip() if len(tds) >= 6 else tds[0].text.strip()
+                        if target_date in tgl_cell:
+                            return {
+                                "exists": True,
+                                "entry": {
+                                    "web_id": tds[0].text.strip(),
+                                    "tanggal": target_date,
+                                    "masuk": "07:10",
+                                    "pulang": "16:25",
+                                    "deskripsi": tds[3].text.strip() if len(tds) >= 4 else "",
+                                },
+                                "error": None,
+                            }
+
+            return {"exists": False, "entry": None, "error": None}
+
+    except Exception as e:
+        logger.warning(f"[LOGBOOK-CHECK] Gagal cek live DERMAGA untuk chat_id={chat_id}: {e}. Memeriksa database lokal...")
+        from app.database.logbook_repo import get_recent_drafts
+        drafts = await get_recent_drafts(chat_id, limit=5)
+        for d in drafts:
+            if d.get("date") == target_date and d.get("status") == "submitted":
+                return {
+                    "exists": True,
+                    "entry": {
+                        "web_id": "Lokal",
+                        "tanggal": target_date,
+                        "masuk": d.get("jam_masuk", "07:10"),
+                        "pulang": d.get("jam_pulang", "16:25"),
+                        "deskripsi": d.get("summary", ""),
+                    },
+                    "error": None,
+                    "is_fallback": True,
+                }
+        return {"exists": False, "entry": None, "error": str(e), "is_fallback": True}
+
+
 async def submit_dermaga_entry(
     chat_id: int,
     date: str,
@@ -179,7 +350,8 @@ async def submit_dermaga_entry(
     jam_pulang: str = "16:25",
     lat: str = "-7.5815",
     lng: str = "112.6247",
-    accuracy: str = "15"
+    accuracy: str = "15",
+    override_id: Optional[str] = None,
 ) -> tuple[bool, str]:
     """Mengirim entri logbook dan absensi ke sistem DERMAGA Polinema secara asinkron."""
     cred = await get_user_credential(chat_id)
@@ -191,43 +363,59 @@ async def submit_dermaga_entry(
 
     try:
         async with aiohttp.ClientSession(headers=DEFAULT_HEADERS, timeout=timeout) as session:
-            # Login
+            # 1. Login
             async with session.get(LOGIN_URL) as resp:
                 soup = BeautifulSoup(await resp.text(), "html.parser")
                 csrf_token = soup.find("input", {"name": "csrf_test_name"})["value"]
 
             payload = {"username": username, "password": password, "csrf_test_name": csrf_token}
-            async with session.post(LOGIN_URL, data=payload, allow_redirects=True):
-                pass
+            async with session.post(LOGIN_URL, data=payload, allow_redirects=True) as login_resp:
+                if "mahasiswa" not in str(login_resp.url) and "Log Out" not in await login_resp.text():
+                    return False, "Autentikasi gagal. Periksa username dan password DERMAGA."
 
-            # Ambil CSRF baru dari form monitoring
+            # 2. Ambil CSRF baru dari form monitoring
             async with session.get(MONITORING_URL) as mon_resp:
                 mon_soup = BeautifulSoup(await mon_resp.text(), "html.parser")
                 csrf_submit_input = mon_soup.find("input", {"name": "csrf_test_name"})
                 csrf_submit = csrf_submit_input["value"] if csrf_submit_input else csrf_token
 
-            # Payload pengiriman absensi/logbook
+            # 3. Micro-jitter GPS natural
+            sub_lat, sub_lng, sub_acc, _ = apply_gps_jitter(lat, lng)
+
+            # 4. Payload pengiriman absensi/logbook
             data_submit = {
                 "csrf_test_name": csrf_submit,
+                "id": override_id or "",
                 "tanggal": date,
                 "jam_masuk": jam_masuk,
                 "jam_pulang": jam_pulang,
                 "pekerjaan": summary,
-                "latitude": lat,
-                "longitude": lng,
-                "accuracy": accuracy,
-                "keterangan": "Masuk",
+                "deskripsi": summary,
+                "latitude": sub_lat,
+                "longitude": sub_lng,
+                "accuracy": sub_acc,
+                "akurasi": sub_acc,
+                "keterangan": "hadir",
             }
 
+            session.headers.update({"Referer": MONITORING_URL})
             async with session.post(SUBMIT_URL, data=data_submit, allow_redirects=True) as sub_resp:
                 sub_text = await sub_resp.text()
-                if sub_resp.status == 200 and ("berhasil" in sub_text.lower() or "sukses" in sub_text.lower()):
+
+                if sub_resp.status != 200:
+                    return False, f"Server DERMAGA merespons dengan HTTP {sub_resp.status}."
+
+                is_success, feedback_msg = extract_feedback_message(sub_text)
+                if is_success is False:
+                    return False, f"DERMAGA menolak penyimpanan: {feedback_msg}"
+
+                if is_success is True:
+                    return True, feedback_msg or "Logbook berhasil disimpan di DERMAGA!"
+
+                if "berhasil" in sub_text.lower() or "sukses" in sub_text.lower():
                     return True, "Logbook berhasil dikirim ke DERMAGA!"
-                elif sub_resp.status == 200:
-                    # Sukses silent atau redirect
-                    return True, "Entri berhasil tersimpan di portal DERMAGA."
-                else:
-                    return False, f"Server DERMAGA mengembalikan status HTTP {sub_resp.status}."
+
+                return True, "Entri berhasil tersimpan di portal DERMAGA."
 
     except Exception as e:
         logger.error(f"[LOGBOOK-SUBMIT] Gagal submit logbook ke DERMAGA: {e}")
@@ -246,8 +434,25 @@ def format_draft_message(draft: dict[str, Any], location_profile: Optional[str] 
     prof_info = PROFILE_DEFINITIONS.get(prof_key, {})
     prof_label = prof_info.get("default_name", prof_key.title())
 
+    # Cek override_id di metadata jika ada
+    override_id = None
+    if draft.get("raw_metadata"):
+        try:
+            raw = draft["raw_metadata"]
+            meta = json.loads(raw) if isinstance(raw, str) else raw
+            if isinstance(meta, dict):
+                override_id = meta.get("override_id")
+            elif isinstance(meta, list) and meta and isinstance(meta[0], dict):
+                override_id = meta[0].get("override_id")
+        except Exception:
+            pass
+
+    header = "📝 <b>DRAF LOGBOOK DERMAGA</b>"
+    if override_id:
+        header += f" <i>(Update/Timpa ID #{override_id})</i>"
+
     return (
-        f"📝 <b>DRAF LOGBOOK DERMAGA</b>\n\n"
+        f"{header}\n\n"
         f"📅 <b>Tanggal:</b> <code>{date}</code>\n"
         f"⏱ <b>Jam Kerja:</b> <code>{jam_masuk} - {jam_pulang} WIB</code>\n"
         f"📍 <b>Profil Lokasi:</b> <b>{prof_label}</b>\n\n"

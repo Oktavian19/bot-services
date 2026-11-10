@@ -10,7 +10,7 @@ from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from aiogram.fsm.storage.memory import MemoryStorage
-from aiogram.types import BotCommand
+from aiogram.types import BotCommand, BotCommandScopeChat, BotCommandScopeDefault
 from aiohttp import web
 from app.bot.handlers import (
     admin,
@@ -34,20 +34,43 @@ from app.services.scheduler import start_scheduler_and_tasks, stop_scheduler_and
 
 
 async def setup_bot_commands(bot: Bot) -> None:
-    """Mendaftarkan menu rekomendasi perintah Telegram ke BotFather / UI klien."""
-    commands = [
-        BotCommand(command="start", description="Tampilkan menu utama"),
-        BotCommand(command="reminder", description="Manajemen agenda & pengingat"),
-        BotCommand(command="ping", description="Cek status koneksi server"),
-        BotCommand(command="speedtest", description="Ukur kecepatan internet server (Admin)"),
-        BotCommand(command="bensin", description="Catatan konsumsi & riwayat BBM"),
+    """Mendaftarkan menu rekomendasi perintah Telegram lengkap dengan pemisahan scope pengguna dan admin."""
+    settings = get_settings()
+
+    user_commands = [
+        BotCommand(command="start", description="Tampilkan menu utama pusat kendali"),
+        BotCommand(command="help", description="Panduan lengkap perintah bot"),
+        BotCommand(command="ping", description="Cek status konektivitas server"),
+        BotCommand(command="reminder", description="Pusat kendali pengingat & agenda"),
+        BotCommand(command="add_reminder", description="Tambah pengingat baru"),
+        BotCommand(command="edit_reminder", description="Kelola & edit pengingat aktif"),
+        BotCommand(command="bensin", description="Catatan konsumsi BBM & status oli"),
         BotCommand(command="logbook", description="Pusat kendali logbook DERMAGA"),
-        BotCommand(command="set_jam_logbook", description="Atur jam pengingat logbook harian"),
-        BotCommand(command="set_hari_logbook", description="Atur hari pengingat logbook"),
-        BotCommand(command="set_lokasi_logbook", description="Atur koordinat GPS lokasi magang"),
+        BotCommand(command="isi_logbook", description="Isi logbook DERMAGA hari ini"),
+        BotCommand(command="daftar_logbook", description="Pendaftaran akun DERMAGA"),
+        BotCommand(command="token_logbook", description="Kelola API token CLI logbook"),
+        BotCommand(command="cek_logbook", description="Cek tabel logbook web DERMAGA"),
+        BotCommand(command="set_jam_logbook", description="Atur jam pengingat harian"),
+        BotCommand(command="set_hari_logbook", description="Atur jadwal hari pengingat"),
+        BotCommand(command="set_lokasi_logbook", description="Atur profil koordinat GPS magang"),
+        BotCommand(command="hapus_akun_logbook", description="Hapus akun & data logbook"),
     ]
-    await bot.set_my_commands(commands)
-    logger.info("[BOT] Menu rekomendasi perintah Telegram berhasil diterapkan!")
+
+    # Daftarkan scope default untuk seluruh pengguna
+    await bot.set_my_commands(user_commands, scope=BotCommandScopeDefault())
+    logger.info(f"[BOT] {len(user_commands)} perintah reguler berhasil didaftarkan ke scope default Telegram!")
+
+    # Jika ADMIN_CHAT_ID dikonfigurasi, daftarkan menu khusus admin (termasuk speedtest & admin_logbook)
+    if settings.ADMIN_CHAT_ID:
+        admin_commands = user_commands + [
+            BotCommand(command="speedtest", description="Ukur kecepatan internet server"),
+            BotCommand(command="admin_logbook", description="Panel admin pengguna logbook"),
+        ]
+        try:
+            await bot.set_my_commands(admin_commands, scope=BotCommandScopeChat(chat_id=settings.ADMIN_CHAT_ID))
+            logger.info(f"[BOT] {len(admin_commands)} perintah admin berhasil didaftarkan untuk chat {settings.ADMIN_CHAT_ID}!")
+        except Exception as e:
+            logger.warning(f"[BOT] Gagal mendaftarkan menu khusus admin: {e}")
 
 
 async def main() -> None:

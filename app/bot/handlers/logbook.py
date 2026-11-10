@@ -5,8 +5,10 @@ Menangani pendaftaran kredensial, draf CLI, persetujuan pengiriman ke DERMAGA, G
 
 from datetime import datetime
 import html
+import json
 import time
 from typing import Optional
+from zoneinfo import ZoneInfo
 from aiogram import F, Router
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
@@ -49,6 +51,7 @@ from app.database.logbook_repo import (
     update_user_reminder_time,
 )
 from app.services.logbook_service import (
+    check_monitoring_today,
     fetch_dermaga_table,
     format_draft_message,
     format_reminder_days_display,
@@ -64,6 +67,7 @@ router = Router(name="logbook_router")
 
 class LogbookManualFillFSM(StatesGroup):
     waiting_for_text = State()
+    waiting_for_edit_text = State()
 
 
 class LogbookEditSummaryFSM(StatesGroup):
@@ -598,16 +602,40 @@ async def cb_confirm_draft(callback: CallbackQuery) -> None:
     jam_pulang = draft.get("jam_pulang", "16:25")
     prof_key = draft.get("selected_profile", "office")
 
+    # Ambil override_id jika draf ini merupakan draf edit
+    override_id = None
+    if draft.get("raw_metadata"):
+        try:
+            raw = draft["raw_metadata"]
+            meta = json.loads(raw) if isinstance(raw, str) else raw
+            if isinstance(meta, dict):
+                override_id = meta.get("override_id")
+            elif isinstance(meta, list) and meta and isinstance(meta[0], dict):
+                override_id = meta[0].get("override_id")
+        except Exception:
+            pass
+
     lat, lng, acc = await get_user_location(chat_id, prof_key)
-    ok, msg = await submit_dermaga_entry(chat_id, date, summary, jam_masuk, jam_pulang, lat, lng, acc)
+    ok, msg = await submit_dermaga_entry(
+        chat_id=chat_id,
+        date=date,
+        summary=summary,
+        jam_masuk=jam_masuk,
+        jam_pulang=jam_pulang,
+        lat=lat,
+        lng=lng,
+        accuracy=acc,
+        override_id=override_id,
+    )
 
     if ok:
         await update_draft_status(draft_id, "submitted")
         await complete_reminder_for_today(chat_id, date)
+        action_title = "Diperbarui (Timpa)" if override_id else "Disubmit"
         balasan = (
-            f"🎉 <b>Logbook Berhasil Disubmit ke DERMAGA!</b>\n\n"
+            f"🎉 <b>Logbook Berhasil {action_title} ke DERMAGA!</b>\n\n"
             f"📅 Tanggal: <code>{date}</code>\n"
-            f"⏱ Jam: <code>{jam_masuk} - {jam_pulang}</code>\n"
+            f"⏱ Jam: <code>{jam_masuk} - {jam_pulang} WIB</code>\n"
             f"📍 Lokasi: <code>{lat}, {lng}</code> (±{acc}m)\n\n"
             f"✅ Absensi dan entri logbook telah tercatat aman di sistem kampus."
         )
@@ -683,38 +711,159 @@ async def process_edit_draft_summary(message: Message, state: FSMContext) -> Non
         )
 
 
+# --- PENGISIAN & EDIT LOGBOOK HARI INI ---
+
+async def _trigger_isi_logbook(chat_id: int, target_message: Message, state: FSMContext) -> None:
+    """Logika alur pengisian logbook hari ini: cek DERMAGA, konfirmasi edit jika sudah ada, atau buat baru."""
+    user = await get_user_by_chat_id(chat_id)
+    if not user:
+        await target_message.answer(
+            "⚠️ <b>Akun Belum Terdaftar!</b>\n\n"
+            "Anda belum menghubungkan akun DERMAGA ke bot ini.\n"
+            "Gunakan perintah:\n"
+            "<code>/daftar_logbook <username> <password></code>",
+            parse_mode="HTML"
+        )
+        return
+
+    settings = get_settings()
+    tz = ZoneInfo(settings.TIMEZONE)
+    today_str = datetime.now(tz).strftime("%Y-%m-%d")
+
+    status_msg = await target_message.answer(
+        f"⏳ <i>Memeriksa status logbook hari ini (<code>{today_str}</code>) di portal DERMAGA...</i>",
+        parse_mode="HTML"
+    )
+
+    result = await check_monitoring_today(chat_id, today_str)
+
+    if result.get("exists") and result.get("entry"):
+        entry = result["entry"]
+        web_id = entry.get("web_id", "-")
+        masuk = entry.get("masuk", "07:10")
+        pulang = entry.get("pulang", "16:25")
+        deskripsi = html.escape(entry.get("deskripsi") or "-")
+
+        confirm_markup = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [
+                    InlineKeyboardButton(
+                        text="✏️ Ya, Edit Logbook Hari Ini",
+                        callback_data=f"log_isi_edit_{web_id}",
+                    )
+                ],
+                [
+                    InlineKeyboardButton(text="❌ Batal", callback_data="log_menu_back")
+                ]
+            ]
+        )
+
+        teks_konfirmasi = (
+            f"⚠️ <b>Logbook Hari Ini Sudah Terisi!</b>\n\n"
+            f"Entri tanggal <code>{today_str}</code> sudah tercatat di sistem DERMAGA.\n\n"
+            f"🆔 <b>ID Entri:</b> <code>#{web_id}</code>\n"
+            f"⏱ <b>Jam Kerja:</b> <code>{masuk} - {pulang} WIB</code>\n"
+            f"📋 <b>Aktivitas Saat Ini:</b>\n"
+            f"<blockquote>{deskripsi}</blockquote>\n\n"
+            f"Apakah Anda ingin mengedit / memperbarui logbook hari ini?"
+        )
+        await status_msg.edit_text(teks_konfirmasi, parse_mode="HTML", reply_markup=confirm_markup)
+
+    else:
+        await state.set_state(LogbookManualFillFSM.waiting_for_text)
+        await state.update_data(target_date=today_str, is_edit=False, override_id=None)
+
+        prompt_markup = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(text="❌ Batal", callback_data="log_menu_back")]
+            ]
+        )
+        prompt_text = (
+            f"✍️ <b>Pengisian Logbook Hari Ini</b>\n"
+            f"📅 Tanggal: <code>{today_str}</code>\n\n"
+            f"Silakan ketikkan deskripsi pekerjaan / aktivitas Anda hari ini:\n"
+            f"<i>(Ketik pesan biasa di chat ini atau klik Batal)</i>"
+        )
+        await status_msg.edit_text(prompt_text, parse_mode="HTML", reply_markup=prompt_markup)
+
+
+@router.message(Command("isi_logbook"))
+async def cmd_isi_logbook(message: Message, state: FSMContext) -> None:
+    """Command /isi_logbook untuk mengisi atau mengedit logbook hari ini."""
+    await _trigger_isi_logbook(message.chat.id, message, state)
+
+
+@router.callback_query(F.data == "log_menu_isi")
+async def cb_menu_isi(callback: CallbackQuery, state: FSMContext) -> None:
+    """Tombol Isi Logbook di menu utama."""
+    await callback.answer()
+    if callback.message:
+        await _trigger_isi_logbook(callback.from_user.id, callback.message, state)
+
+
+@router.callback_query(F.data.startswith("log_isi_edit_"))
+async def cb_isi_edit_today(callback: CallbackQuery, state: FSMContext) -> None:
+    """Konfirmasi user memilih 'Ya, Edit Logbook Hari Ini'."""
+    await callback.answer()
+    web_id = callback.data.replace("log_isi_edit_", "")
+    settings = get_settings()
+    tz = ZoneInfo(settings.TIMEZONE)
+    today_str = datetime.now(tz).strftime("%Y-%m-%d")
+
+    await state.set_state(LogbookManualFillFSM.waiting_for_edit_text)
+    await state.update_data(target_date=today_str, is_edit=True, override_id=web_id)
+
+    prompt_markup = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="❌ Batal", callback_data="log_menu_back")]
+        ]
+    )
+    prompt_text = (
+        f"✏️ <b>Edit Logbook Hari Ini (<code>{today_str}</code>)</b>\n"
+        f"🆔 ID Entri: <code>#{web_id}</code>\n\n"
+        f"Silakan ketikkan deskripsi pekerjaan / aktivitas baru untuk menimpa entri lama:\n"
+        f"<i>(Ketik pesan biasa di chat ini atau klik Batal)</i>"
+    )
+    if callback.message:
+        await callback.message.edit_text(prompt_text, parse_mode="HTML", reply_markup=prompt_markup)
+
+
 # --- MANUAL ISI DARI PENGINGAT ---
 
 @router.callback_query(F.data.startswith("log_remind_fill_"))
 async def cb_remind_fill(callback: CallbackQuery, state: FSMContext) -> None:
-    """Mulai input manual saat user mengklik 'Isi Logbook' pada pesan pengingat."""
+    """Mulai input saat user mengklik 'Isi Logbook' pada pesan pengingat."""
     await callback.answer()
-    target_date = callback.data.replace("log_remind_fill_", "")
-    await state.set_state(LogbookManualFillFSM.waiting_for_text)
-    await state.update_data(target_date=target_date)
     if callback.message:
-        await callback.message.answer(
-            f"✍️ <b>Input Logbook Tanggal {target_date}</b>\n\n"
-            f"Silakan ketikkan deskripsi pekerjaan/aktivitas Anda hari ini:",
-            parse_mode="HTML"
-        )
+        await _trigger_isi_logbook(callback.from_user.id, callback.message, state)
 
 
 @router.message(LogbookManualFillFSM.waiting_for_text)
+@router.message(LogbookManualFillFSM.waiting_for_edit_text)
 async def process_manual_fill_text(message: Message, state: FSMContext) -> None:
-    """Menerima teks aktivitas logbook manual dan membuat draf siap kirim."""
+    """Menerima teks aktivitas logbook (baru maupun edit) dan membuat draf siap kirim."""
     if not message.text or message.text.startswith("/"):
+        if message.text and message.text.strip().lower() == "/cancel":
+            await state.clear()
+            await message.answer("❌ Pengisian logbook dibatalkan.", reply_markup=get_back_to_logbook_keyboard())
+            return
         await state.clear()
-        await message.answer("❌ Pengisian logbook dibatalkan.")
         return
 
     data = await state.get_data()
-    target_date = data.get("target_date", datetime.now().strftime("%Y-%m-%d"))
+    settings = get_settings()
+    tz = ZoneInfo(settings.TIMEZONE)
+    default_today = datetime.now(tz).strftime("%Y-%m-%d")
+    target_date = data.get("target_date", default_today)
+    is_edit = data.get("is_edit", False)
+    override_id = data.get("override_id")
     await state.clear()
 
     chat_id = message.chat.id
     ts = int(time.time())
     idempotency_key = f"manual_{chat_id}_{target_date}_{ts}"
+
+    raw_meta = [{"override_id": override_id}] if override_id else []
 
     draft, _ = await create_or_get_draft(
         chat_id=chat_id,
@@ -722,7 +871,7 @@ async def process_manual_fill_text(message: Message, state: FSMContext) -> None:
         date=target_date,
         projects=["Logbook Harian"],
         commits_summary=message.text.strip(),
-        raw_metadata=[],
+        raw_metadata=raw_meta,
         jam_masuk="07:10",
         jam_pulang="16:25",
     )
@@ -730,9 +879,9 @@ async def process_manual_fill_text(message: Message, state: FSMContext) -> None:
 
     text = format_draft_message(draft)
     markup = get_draft_approval_keyboard(draft["id"], draft.get("selected_profile", "office"))
+    header = "🔄 <b>Draf Edit Logbook Berhasil Disiapkan!</b>\n\n" if is_edit else "✅ <b>Draf Logbook Berhasil Dibuat!</b>\n\n"
     await message.answer(
-        "✅ <b>Draf Logbook Berhasil Dibuat!</b>\n\n"
-        "Silakan periksa dan lakukan konfirmasi untuk mengirim ke DERMAGA:\n\n" + text,
+        f"{header}Silakan periksa detailnya dan klik tombol di bawah untuk mengirim ke DERMAGA:\n\n" + text,
         parse_mode="HTML",
         reply_markup=markup
     )

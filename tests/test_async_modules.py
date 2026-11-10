@@ -173,6 +173,38 @@ class TestAsyncCore(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Sidang", rem_text)
         self.assertIn("15-11-2026", rem_text)
 
+    async def test_setup_bot_commands(self):
+        from main import setup_bot_commands
+        mock_bot = AsyncMock()
+        await setup_bot_commands(mock_bot)
+        self.assertEqual(mock_bot.set_my_commands.await_count, 2)
+        # Check call 1: user default scope (16 commands)
+        user_call = mock_bot.set_my_commands.await_args_list[0]
+        user_cmds = user_call[0][0]
+        self.assertEqual(len(user_cmds), 16)
+        # Check call 2: admin chat scope (18 commands)
+        admin_call = mock_bot.set_my_commands.await_args_list[1]
+        admin_cmds = admin_call[0][0]
+        self.assertEqual(len(admin_cmds), 18)
+
+    def test_apply_gps_jitter_and_feedback(self):
+        from app.services.logbook_service import apply_gps_jitter, extract_feedback_message
+        j_lat, j_lng, j_acc, drift = apply_gps_jitter("-7.9467", "112.6156")
+        self.assertNotEqual(j_lat, "-7.9467")
+        self.assertTrue(2.0 <= drift <= 5.0)
+        self.assertTrue(8 <= int(j_acc) <= 15)
+
+        # Test feedback extractor
+        html_success = "<script>notify('success', 'Data logbook tersimpan');</script>"
+        ok, msg = extract_feedback_message(html_success)
+        self.assertTrue(ok)
+        self.assertIn("tersimpan", msg)
+
+        html_err = "<div class='alert alert-danger'>Peringatan: jam masuk tidak valid</div>"
+        ok_err, msg_err = extract_feedback_message(html_err)
+        self.assertFalse(ok_err)
+        self.assertIn("tidak valid", msg_err)
+
 
 if __name__ == "__main__":
     unittest.main()

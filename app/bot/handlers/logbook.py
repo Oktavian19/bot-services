@@ -17,8 +17,10 @@ from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMar
 from app.bot.keyboards.logbook import (
     get_back_to_logbook_keyboard,
     get_draft_approval_keyboard,
+    get_edit_detail_keyboard,
     get_locations_menu_keyboard,
     get_logbook_hub_keyboard,
+    get_month_calendar_keyboard,
     get_reminder_days_checklist_keyboard,
     get_settings_menu_keyboard,
 )
@@ -54,10 +56,14 @@ from app.services.logbook_service import (
     check_monitoring_today,
     fetch_dermaga_table,
     format_draft_message,
+    format_month_name,
     format_reminder_days_display,
+    format_short_date,
+    group_entries_by_month,
     parse_coordinates_input,
     submit_dermaga_entry,
     test_dermaga_login,
+    validate_time_format,
 )
 
 router = Router(name="logbook_router")
@@ -80,6 +86,16 @@ class LogbookSetJamFSM(StatesGroup):
 
 class LogbookSetLocFSM(StatesGroup):
     waiting_for_location = State()
+
+
+class LogbookEditPastFSM(StatesGroup):
+    waiting_for_masuk = State()
+    waiting_for_pulang = State()
+    waiting_for_deskripsi = State()
+
+
+# Sesi penyimpanan state in-memory untuk navigasi kalender dan edit entri lampau
+_calendar_edit_sessions: dict[int, dict] = {}
 
 
 # --- HUB /LOGBOOK ---
@@ -223,12 +239,12 @@ async def cmd_daftar_logbook(message: Message) -> None:
         await loading.edit_text(f"❌ Terjadi kesalahan saat menyimpan akun: {e}")
 
 
-# --- TOKEN LOGBOOK ---
+# --- TOKEN & AKUN LOGBOOK ---
 
 @router.message(Command("token_logbook"))
-@router.callback_query(F.data == "log_menu_token")
+@router.callback_query(F.data.in_({"log_menu_token", "log_menu_account"}))
 async def cmd_token_logbook(event: Message | CallbackQuery) -> None:
-    """Menampilkan token API CLI logbook."""
+    """Menampilkan detail akun dan token API CLI logbook."""
     settings = get_settings()
     chat_id = event.chat.id if isinstance(event, Message) else event.from_user.id
     target_msg = event if isinstance(event, Message) else event.message
@@ -238,19 +254,20 @@ async def cmd_token_logbook(event: Message | CallbackQuery) -> None:
 
     user = await get_user_by_chat_id(chat_id)
     if not user:
-        await target_msg.answer(
-            "⚠️ Akun Anda belum terdaftar. Gunakan <code>/daftar_logbook</code> terlebih dahulu.",
-            parse_mode="HTML"
-        )
+        warn_text = "⚠️ Akun Anda belum terdaftar. Gunakan <code>/daftar_logbook</code> terlebih dahulu."
+        if isinstance(event, CallbackQuery) and event.message:
+            await event.message.edit_text(warn_text, parse_mode="HTML", reply_markup=get_back_to_logbook_keyboard())
+        else:
+            await target_msg.answer(warn_text, parse_mode="HTML")
         return
 
     token = user.get("api_token", "-")
     public_url = settings.LOGBOOK_PUBLIC_URL
 
     text = (
-        f"🔑 <b>API Token CLI Logbook Anda</b>\n\n"
-        f"👤 Akun: <code>{user['username']}</code>\n"
-        f"Token:\n<code>{token}</code>\n\n"
+        f"🔑 <b>Akun & API Token CLI Logbook Anda</b>\n\n"
+        f"👤 <b>Username:</b> <code>{user['username']}</code>\n"
+        f"🔑 <b>API Token:</b>\n<code>{token}</code>\n\n"
         f"📋 <b>Konfigurasi di config.json:</b>\n"
         f"<pre>"
         f"{{\n"
@@ -262,8 +279,15 @@ async def cmd_token_logbook(event: Message | CallbackQuery) -> None:
     )
     markup = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🔄 Buat Ulang Token", callback_data="log_regen_token")],
+        [InlineKeyboardButton(text="🗑 Hapus Akun & Data", callback_data="log_menu_hapus")],
         [InlineKeyboardButton(text="⬅️ Kembali ke Menu Logbook", callback_data="log_menu_back")],
     ])
+    if isinstance(event, CallbackQuery) and event.message:
+        try:
+            await event.message.edit_text(text, parse_mode="HTML", reply_markup=markup)
+            return
+        except Exception:
+            pass
     await target_msg.answer(text, parse_mode="HTML", reply_markup=markup)
 
 
@@ -319,6 +343,485 @@ async def cmd_cek_logbook(event: Message | CallbackQuery) -> None:
         await loading.edit_text(text, parse_mode="HTML", reply_markup=markup)
     except Exception as err:
         await loading.edit_text(f"❌ Gagal mengambil data DERMAGA: {err}", reply_markup=get_back_to_logbook_keyboard())
+
+
+# --- KALENDER & EDIT LOGBOOK ---
+
+def _render_edit_detail_text(session: dict) -> str:
+    """Menyusun teks tampilan detail entri logbook yang sedang diedit."""
+    orig = session.get("original", {})
+    tgl = session.get("tanggal", "-")
+    web_id = session.get("web_id", "-")
+    masuk = session.get("jam_masuk", "07:10")
+    pulang = session.get("jam_pulang", "16:25")
+    desk = html.escape(session.get("deskripsi", "-"))
+
+    masuk_badge = " <i>(diubah)</i>" if masuk != orig.get("jam_masuk") else ""
+    pulang_badge = " <i>(diubah)</i>" if pulang != orig.get("jam_pulang") else ""
+    desk_badge = " <i>(diubah)</i>" if session.get("deskripsi") != orig.get("deskripsi") else ""
+
+    text = (
+        f"📝 <b>Detail Logbook Terpilih</b>\n\n"
+        f"🗓 <b>Tanggal:</b> <code>{tgl}</code> (ID: <code>#{web_id}</code>)\n"
+        f"⏰ <b>Jam Masuk:</b> <code>{masuk}</code>{masuk_badge}\n"
+        f"⏰ <b>Jam Pulang:</b> <code>{pulang}</code>{pulang_badge}\n"
+        f"📋 <b>Pekerjaan / Aktivitas:</b>{desk_badge}\n"
+        f"<blockquote>{desk}</blockquote>\n\n"
+    )
+    any_changed = bool(masuk_badge or pulang_badge or desk_badge)
+    if any_changed:
+        text += "💡 <i>Terdapat perubahan yang belum disimpan. Klik 'Simpan Perubahan' untuk mengonfirmasi ke DERMAGA.</i>"
+    else:
+        text += "<i>Pilih field di bawah jika Anda ingin mengubah jam kerja atau deskripsi pekerjaan:</i>"
+    return text
+
+
+async def _send_month_calendar_view(chat_id: int, target_message: Message, current_month: str) -> None:
+    session = _calendar_edit_sessions.get(chat_id)
+    if not session or not session.get("by_month"):
+        text, markup = await render_hub_view(chat_id)
+        try:
+            await target_message.edit_text(text, parse_mode="HTML", reply_markup=markup)
+        except Exception:
+            await target_message.answer(text, parse_mode="HTML", reply_markup=markup)
+        return
+
+    month_name = format_month_name(current_month)
+    month_entries = session["by_month"].get(current_month, [])
+    markup = get_month_calendar_keyboard(current_month, session["months"], month_entries)
+
+    text = (
+        f"📅 <b>Pilih Tanggal Logbook untuk Diedit</b>\n\n"
+        f"Bulan: <b>{month_name}</b> ({len(month_entries)} entri tercatat)\n\n"
+        f"Silakan pilih tanggal yang ingin Anda ubah di bawah:"
+    )
+    try:
+        await target_message.edit_text(text, parse_mode="HTML", reply_markup=markup)
+    except Exception:
+        await target_message.answer(text, parse_mode="HTML", reply_markup=markup)
+
+
+async def _send_edit_detail_view(chat_id: int, target_message: Message) -> None:
+    session = _calendar_edit_sessions.get(chat_id)
+    if not session or not session.get("web_id"):
+        text, markup = await render_hub_view(chat_id)
+        try:
+            await target_message.edit_text(text, parse_mode="HTML", reply_markup=markup)
+        except Exception:
+            await target_message.answer(text, parse_mode="HTML", reply_markup=markup)
+        return
+
+    orig = session.get("original", {})
+    any_changed = (
+        session["jam_masuk"] != orig.get("jam_masuk")
+        or session["jam_pulang"] != orig.get("jam_pulang")
+        or session["deskripsi"] != orig.get("deskripsi")
+    )
+    text = _render_edit_detail_text(session)
+    markup = get_edit_detail_keyboard(any_changed)
+    try:
+        await target_message.edit_text(text, parse_mode="HTML", reply_markup=markup)
+    except Exception:
+        await target_message.answer(text, parse_mode="HTML", reply_markup=markup)
+
+
+@router.callback_query(F.data == "log_menu_edit")
+async def cb_menu_edit(callback: CallbackQuery) -> None:
+    """Membuka tampilan kalender dan entri logbook untuk diedit."""
+    await callback.answer()
+    chat_id = callback.from_user.id
+    user = await get_user_by_chat_id(chat_id)
+    if not user:
+        if callback.message:
+            await callback.message.edit_text(
+                "⚠️ Akun DERMAGA Anda belum terdaftar. Gunakan <code>/daftar_logbook</code> terlebih dahulu.",
+                parse_mode="HTML",
+                reply_markup=get_back_to_logbook_keyboard()
+            )
+        return
+
+    if callback.message:
+        await callback.message.edit_text(
+            "⏳ <i>Sedang mengambil riwayat logbook dari portal DERMAGA...</i>",
+            parse_mode="HTML"
+        )
+
+    try:
+        entries = await fetch_dermaga_table(chat_id)
+        if not entries:
+            if callback.message:
+                await callback.message.edit_text(
+                    f"ℹ️ Belum ada entri logbook yang tercatat di akun DERMAGA <code>{user['username']}</code> untuk diedit.",
+                    parse_mode="HTML",
+                    reply_markup=get_back_to_logbook_keyboard()
+                )
+            return
+
+        grouped = group_entries_by_month(entries)
+        months_list = sorted(grouped.keys(), reverse=True)
+        current_month = months_list[0] if months_list else datetime.now().strftime("%Y-%m")
+
+        _calendar_edit_sessions[chat_id] = {
+            "all_entries": entries,
+            "by_month": grouped,
+            "months": months_list,
+            "selected_month": current_month,
+        }
+
+        if callback.message:
+            await _send_month_calendar_view(chat_id, callback.message, current_month)
+
+    except Exception as err:
+        logger.error(f"[LOGBOOK-CALENDAR] Gagal memuat entri kalender: {err}")
+        if callback.message:
+            await callback.message.edit_text(
+                f"❌ Gagal mengambil data DERMAGA: {err}",
+                reply_markup=get_back_to_logbook_keyboard()
+            )
+
+
+@router.callback_query(F.data.startswith("log_edmonth_"))
+async def cb_calendar_change_month(callback: CallbackQuery) -> None:
+    """Mengubah bulan pada tampilan kalender."""
+    await callback.answer()
+    chat_id = callback.from_user.id
+    target_month = callback.data.split("_")[2]
+    session = _calendar_edit_sessions.get(chat_id)
+    if not session or not session.get("by_month"):
+        if callback.message:
+            text, markup = await render_hub_view(chat_id)
+            await callback.message.edit_text(text, parse_mode="HTML", reply_markup=markup)
+        return
+
+    session["selected_month"] = target_month
+    if callback.message:
+        await _send_month_calendar_view(chat_id, callback.message, target_month)
+
+
+@router.callback_query(F.data.startswith("log_edpick_"))
+async def cb_calendar_pick_entry(callback: CallbackQuery) -> None:
+    """Memilih entri logbook tanggal tertentu untuk diedit."""
+    await callback.answer()
+    chat_id = callback.from_user.id
+    web_id = callback.data.split("_")[2]
+    session = _calendar_edit_sessions.get(chat_id)
+    if not session or not session.get("all_entries"):
+        if callback.message:
+            await callback.message.answer("❌ Sesi edit telah berakhir. Silakan buka kembali menu /logbook.")
+        return
+
+    selected_entry = None
+    for e in session["all_entries"]:
+        if str(e.get("web_id")) == str(web_id):
+            selected_entry = e
+            break
+
+    if not selected_entry:
+        if callback.message:
+            await callback.message.answer("❌ Entri logbook tidak ditemukan.")
+        return
+
+    session["web_id"] = str(selected_entry["web_id"])
+    session["tanggal"] = str(selected_entry.get("tanggal_iso", "")) or str(selected_entry.get("tanggal_text", ""))
+    session["jam_masuk"] = str(selected_entry.get("jam_masuk") or "07:10")
+    session["jam_pulang"] = str(selected_entry.get("jam_pulang") or "16:25")
+    session["deskripsi"] = str(selected_entry.get("pekerjaan") or "")
+    session["keterangan"] = str(selected_entry.get("keterangan") or "hadir")
+    session["original"] = {
+        "jam_masuk": session["jam_masuk"],
+        "jam_pulang": session["jam_pulang"],
+        "deskripsi": session["deskripsi"],
+    }
+
+    if callback.message:
+        await _send_edit_detail_view(chat_id, callback.message)
+
+
+@router.callback_query(F.data == "log_edact_masuk")
+async def cb_edact_masuk(callback: CallbackQuery, state: FSMContext) -> None:
+    """Memicu pengubahan jam masuk entri lampau."""
+    await callback.answer()
+    chat_id = callback.from_user.id
+    session = _calendar_edit_sessions.get(chat_id)
+    if not session:
+        if callback.message:
+            await callback.message.answer("❌ Sesi edit telah berakhir.")
+        return
+
+    await state.set_state(LogbookEditPastFSM.waiting_for_masuk)
+    text = (
+        f"⏰ <b>Ubah Jam Masuk (Tanggal {session['tanggal']})</b>\n\n"
+        f"Jam masuk saat ini: <code>{session['jam_masuk']}</code>\n"
+        f"Silakan ketik jam masuk baru (Format 24 jam <code>HH:MM</code>, contoh: <code>07:15</code>):"
+    )
+    markup = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="❌ Batal Ubah Jam", callback_data="log_edact_reedit")]
+    ])
+    if callback.message:
+        await callback.message.edit_text(text, parse_mode="HTML", reply_markup=markup)
+
+
+@router.message(LogbookEditPastFSM.waiting_for_masuk)
+async def process_edit_masuk_input(message: Message, state: FSMContext) -> None:
+    """Menerima input jam masuk baru untuk entri lampau."""
+    if not message.text or message.text.startswith("/"):
+        await state.clear()
+        await message.answer("❌ Pengubahan jam masuk dibatalkan.")
+        return
+
+    val = message.text.strip()
+    if not validate_time_format(val):
+        await message.answer("❌ Format tidak valid. Harap gunakan format 24 jam <code>HH:MM</code> (contoh: 07:15):", parse_mode="HTML")
+        return
+
+    h, m = val.split(":")
+    norm_val = f"{int(h):02d}:{int(m):02d}"
+    await state.clear()
+
+    session = _calendar_edit_sessions.get(message.chat.id)
+    if session:
+        session["jam_masuk"] = norm_val
+        await _send_edit_detail_view(message.chat.id, message)
+    else:
+        await message.answer("❌ Sesi edit telah berakhir. Silakan buka menu /logbook.")
+
+
+@router.callback_query(F.data == "log_edact_pulang")
+async def cb_edact_pulang(callback: CallbackQuery, state: FSMContext) -> None:
+    """Memicu pengubahan jam pulang entri lampau."""
+    await callback.answer()
+    chat_id = callback.from_user.id
+    session = _calendar_edit_sessions.get(chat_id)
+    if not session:
+        if callback.message:
+            await callback.message.answer("❌ Sesi edit telah berakhir.")
+        return
+
+    await state.set_state(LogbookEditPastFSM.waiting_for_pulang)
+    text = (
+        f"⏰ <b>Ubah Jam Pulang (Tanggal {session['tanggal']})</b>\n\n"
+        f"Jam pulang saat ini: <code>{session['jam_pulang']}</code>\n"
+        f"Silakan ketik jam pulang baru (Format 24 jam <code>HH:MM</code>, contoh: <code>16:30</code>):"
+    )
+    markup = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="❌ Batal Ubah Jam", callback_data="log_edact_reedit")]
+    ])
+    if callback.message:
+        await callback.message.edit_text(text, parse_mode="HTML", reply_markup=markup)
+
+
+@router.message(LogbookEditPastFSM.waiting_for_pulang)
+async def process_edit_pulang_input(message: Message, state: FSMContext) -> None:
+    """Menerima input jam pulang baru untuk entri lampau."""
+    if not message.text or message.text.startswith("/"):
+        await state.clear()
+        await message.answer("❌ Pengubahan jam pulang dibatalkan.")
+        return
+
+    val = message.text.strip()
+    if not validate_time_format(val):
+        await message.answer("❌ Format tidak valid. Harap gunakan format 24 jam <code>HH:MM</code> (contoh: 16:30):", parse_mode="HTML")
+        return
+
+    h, m = val.split(":")
+    norm_val = f"{int(h):02d}:{int(m):02d}"
+    await state.clear()
+
+    session = _calendar_edit_sessions.get(message.chat.id)
+    if session:
+        session["jam_pulang"] = norm_val
+        await _send_edit_detail_view(message.chat.id, message)
+    else:
+        await message.answer("❌ Sesi edit telah berakhir. Silakan buka menu /logbook.")
+
+
+@router.callback_query(F.data == "log_edact_desk")
+async def cb_edact_desk(callback: CallbackQuery, state: FSMContext) -> None:
+    """Memicu pengubahan deskripsi pekerjaan entri lampau."""
+    await callback.answer()
+    chat_id = callback.from_user.id
+    session = _calendar_edit_sessions.get(chat_id)
+    if not session:
+        if callback.message:
+            await callback.message.answer("❌ Sesi edit telah berakhir.")
+        return
+
+    await state.set_state(LogbookEditPastFSM.waiting_for_deskripsi)
+    text = (
+        f"📝 <b>Ubah Deskripsi Pekerjaan (Tanggal {session['tanggal']})</b>\n\n"
+        f"Deskripsi saat ini:\n<blockquote>{html.escape(session['deskripsi'])}</blockquote>\n\n"
+        f"Silakan ketikkan teks deskripsi pekerjaan baru yang ingin disimpan:"
+    )
+    markup = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="❌ Batal Ubah Deskripsi", callback_data="log_edact_reedit")]
+    ])
+    if callback.message:
+        await callback.message.edit_text(text, parse_mode="HTML", reply_markup=markup)
+
+
+@router.message(LogbookEditPastFSM.waiting_for_deskripsi)
+async def process_edit_deskripsi_input(message: Message, state: FSMContext) -> None:
+    """Menerima input deskripsi pekerjaan baru untuk entri lampau."""
+    if not message.text or message.text.startswith("/"):
+        await state.clear()
+        await message.answer("❌ Pengubahan deskripsi dibatalkan.")
+        return
+
+    val = message.text.strip()
+    await state.clear()
+
+    session = _calendar_edit_sessions.get(message.chat.id)
+    if session:
+        session["deskripsi"] = val
+        await _send_edit_detail_view(message.chat.id, message)
+    else:
+        await message.answer("❌ Sesi edit telah berakhir. Silakan buka menu /logbook.")
+
+
+@router.callback_query(F.data == "log_edact_save")
+async def cb_edact_save(callback: CallbackQuery) -> None:
+    """Menampilkan konfirmasi sebelum menyimpan perubahan ke DERMAGA."""
+    chat_id = callback.from_user.id
+    session = _calendar_edit_sessions.get(chat_id)
+    if not session or not session.get("web_id"):
+        await callback.answer("❌ Sesi edit tidak ditemukan.", show_alert=True)
+        return
+
+    orig = session.get("original", {})
+    masuk_changed = (session["jam_masuk"] != orig.get("jam_masuk"))
+    pulang_changed = (session["jam_pulang"] != orig.get("jam_pulang"))
+    desk_changed = (session["deskripsi"] != orig.get("deskripsi"))
+    if not (masuk_changed or pulang_changed or desk_changed):
+        await callback.answer("Belum ada perubahan data yang dilakukan.", show_alert=True)
+        return
+
+    await callback.answer()
+    tgl = session.get("tanggal", "-")
+    web_id = session.get("web_id", "-")
+    masuk = session.get("jam_masuk", "07:10")
+    pulang = session.get("jam_pulang", "16:25")
+    desk = html.escape(session.get("deskripsi", "-"))
+
+    confirm_text = (
+        f"📖 <b>Konfirmasi Perubahan Logbook DERMAGA</b>\n\n"
+        f"🗓 <b>Tanggal:</b> <code>{tgl}</code> (ID: <code>#{web_id}</code>)\n"
+        f"⏰ <b>Jam Kerja:</b> <code>{masuk} - {pulang} WIB</code>\n\n"
+        f"📝 <b>Ringkasan Aktivitas Terbaru:</b>\n"
+        f"<blockquote>{desk}</blockquote>\n\n"
+        f"Silakan konfirmasi untuk memperbarui data pada portal DERMAGA:"
+    )
+    markup = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✅ Konfirmasi Simpan", callback_data="log_edact_confirmsave")],
+        [InlineKeyboardButton(text="✏️ Ubah Kembali", callback_data="log_edact_reedit")],
+        [InlineKeyboardButton(text="❌ Batal", callback_data="log_edact_cancel")],
+    ])
+    if callback.message:
+        await callback.message.edit_text(confirm_text, parse_mode="HTML", reply_markup=markup)
+
+
+@router.callback_query(F.data == "log_edact_confirmsave")
+async def cb_edact_confirmsave(callback: CallbackQuery) -> None:
+    """Mengeksekusi penyimpanan update entri logbook lampau ke DERMAGA."""
+    await callback.answer()
+    chat_id = callback.from_user.id
+    session = _calendar_edit_sessions.pop(chat_id, None)
+    if not session or not session.get("web_id"):
+        if callback.message:
+            await callback.message.answer("❌ Sesi edit telah kadaluarsa.")
+        return
+
+    if callback.message:
+        await callback.message.edit_text(
+            f"⏳ <i>Sedang memperbarui logbook tanggal <code>{session['tanggal']}</code> (ID: #{session['web_id']}) di DERMAGA...</i>",
+            parse_mode="HTML"
+        )
+
+    lat, lng, acc = await get_user_location(chat_id)
+    ok, msg = await submit_dermaga_entry(
+        chat_id=chat_id,
+        date=session["tanggal"],
+        summary=session["deskripsi"],
+        jam_masuk=session["jam_masuk"],
+        jam_pulang=session["jam_pulang"],
+        lat=lat,
+        lng=lng,
+        accuracy=acc,
+        override_id=session["web_id"],
+    )
+
+    if ok:
+        balasan = (
+            f"🎉 <b>Logbook Berhasil Diperbarui!</b>\n\n"
+            f"🗓 Tanggal: <code>{session['tanggal']}</code> (ID: <code>#{session['web_id']}</code>)\n"
+            f"⏰ Jam: <code>{session['jam_masuk']} - {session['jam_pulang']} WIB</code>\n\n"
+            f"📝 Data di portal DERMAGA telah terverifikasi berhasil diperbarui."
+        )
+    else:
+        balasan = f"❌ <b>Gagal Memperbarui Logbook:</b>\n{msg}"
+
+    if callback.message:
+        await callback.message.answer(balasan, parse_mode="HTML", reply_markup=get_back_to_logbook_keyboard())
+
+
+@router.callback_query(F.data == "log_edact_reedit")
+async def cb_edact_reedit(callback: CallbackQuery) -> None:
+    """Kembali ke tampilan detail edit entri."""
+    await callback.answer()
+    if callback.message:
+        await _send_edit_detail_view(callback.from_user.id, callback.message)
+
+
+@router.callback_query(F.data == "log_edact_backmonth")
+async def cb_edact_backmonth(callback: CallbackQuery) -> None:
+    """Kembali ke pemilihan tanggal kalender bulan terpilih."""
+    await callback.answer()
+    chat_id = callback.from_user.id
+    session = _calendar_edit_sessions.get(chat_id)
+    if not session or not session.get("selected_month"):
+        if callback.message:
+            text, markup = await render_hub_view(chat_id)
+            await callback.message.edit_text(text, parse_mode="HTML", reply_markup=markup)
+        return
+
+    if callback.message:
+        await _send_month_calendar_view(chat_id, callback.message, session["selected_month"])
+
+
+@router.callback_query(F.data == "log_edact_cancel")
+async def cb_edact_cancel(callback: CallbackQuery) -> None:
+    """Membatalkan sesi edit entri lampau dan kembali ke menu utama logbook."""
+    await callback.answer()
+    _calendar_edit_sessions.pop(callback.from_user.id, None)
+    if callback.message:
+        text, markup = await render_hub_view(callback.from_user.id)
+        await callback.message.edit_text(text, parse_mode="HTML", reply_markup=markup)
+
+
+# --- PENGATURAN LOGBOOK ---
+
+@router.callback_query(F.data == "log_menu_settings")
+async def cb_menu_settings(callback: CallbackQuery) -> None:
+    """Menampilkan menu pengaturan pengingat jam dan hari logbook."""
+    await callback.answer()
+    chat_id = callback.from_user.id
+    user_time = await get_user_reminder_time(chat_id)
+    user_days = await get_user_reminder_days(chat_id)
+    days_disp = format_reminder_days_display(user_days)
+
+    text = (
+        "⚙️ <b>Pengaturan Pengingat Logbook</b>\n\n"
+        f"⏰ <b>Jam Pengingat:</b> <code>{user_time} WIB</code>\n"
+        f"🗓 <b>Hari Aktif:</b> <b>{days_disp}</b>\n\n"
+        "Pilih pengaturan yang ingin Anda ubah:"
+    )
+    markup = get_settings_menu_keyboard()
+    if callback.message:
+        try:
+            await callback.message.edit_text(text, parse_mode="HTML", reply_markup=markup)
+            return
+        except Exception:
+            pass
+        await callback.message.answer(text, parse_mode="HTML", reply_markup=markup)
 
 
 # --- PENGATURAN JAM PENGINGAT ---

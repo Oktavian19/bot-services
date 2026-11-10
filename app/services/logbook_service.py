@@ -159,6 +159,65 @@ def extract_feedback_message(html_text: str) -> tuple[Optional[bool], str]:
 
 
 
+MONTH_NAMES = {
+    "01": "Januari", "02": "Februari", "03": "Maret", "04": "April",
+    "05": "Mei", "06": "Juni", "07": "Juli", "08": "Agustus",
+    "09": "September", "10": "Oktober", "11": "November", "12": "Desember"
+}
+
+MONTH_SHORT = {
+    "01": "Jan", "02": "Feb", "03": "Mar", "04": "Apr",
+    "05": "Mei", "06": "Jun", "07": "Jul", "08": "Agu",
+    "09": "Sep", "10": "Okt", "11": "Nov", "12": "Des"
+}
+
+
+def validate_time_format(time_str: str) -> bool:
+    """Memvalidasi format 24 jam HH:MM (00:00 s/d 23:59)."""
+    try:
+        parts = time_str.strip().split(":")
+        if len(parts) != 2:
+            return False
+        h, m = int(parts[0]), int(parts[1])
+        return 0 <= h <= 23 and 0 <= m <= 59
+    except Exception:
+        return False
+
+
+def format_month_name(ym: str) -> str:
+    """Mengubah format YYYY-MM menjadi nama bulan (contoh: 2026-11 -> November 2026)."""
+    try:
+        parts = ym.split("-")
+        if len(parts) == 2:
+            return f"{MONTH_NAMES.get(parts[1], parts[1])} {parts[0]}"
+    except Exception:
+        pass
+    return ym
+
+
+def format_short_date(tanggal_iso: str) -> str:
+    """Mengubah format YYYY-MM-DD menjadi label pendek (contoh: 2026-11-04 -> 04 Nov)."""
+    try:
+        parts = tanggal_iso.split("-")
+        if len(parts) == 3:
+            return f"{parts[2]} {MONTH_SHORT.get(parts[1], parts[1])}"
+    except Exception:
+        pass
+    return tanggal_iso
+
+
+def group_entries_by_month(entries: list) -> dict[str, list]:
+    """Mengelompokkan entri logbook DERMAGA berdasarkan YYYY-MM."""
+    grouped: dict[str, list] = {}
+    for e in entries:
+        tgl = e.get("tanggal_iso", "") or e.get("tanggal_text", "")
+        ym = tgl[:7] if (len(tgl) >= 7 and "-" in tgl) else "Lainnya"
+        if ym not in grouped:
+            grouped[ym] = []
+        grouped[ym].append(e)
+    return grouped
+
+
 # --- PORTAL DERMAGA SCRAPER (ASYNC) ---
 
 async def test_dermaga_login(username: str, plain_password: str) -> tuple[bool, str]:
@@ -234,18 +293,34 @@ async def fetch_dermaga_table(chat_id: int) -> List[dict[str, Any]]:
             for row in rows[1:]:  # Lewati header
                 cols = row.find_all("td")
                 if len(cols) >= 6:
-                    web_id = cols[0].text.strip()
-                    tgl_text = cols[1].text.strip()
-                    jam = cols[2].text.strip()
-                    pekerjaan = cols[3].text.strip()
-                    ket = cols[4].text.strip()
-                    status_verif = cols[5].text.strip()
+                    btn_edit = row.find(class_="btn-edit")
+                    web_id = (btn_edit.get("data-id") if btn_edit else None) or cols[0].text.strip()
+                    btn_tgl = btn_edit.get("data-tanggal") if btn_edit else None
+                    btn_masuk = btn_edit.get("data-masuk") if btn_edit else None
+                    btn_pulang = btn_edit.get("data-pulang") if btn_edit else None
+                    btn_desk = btn_edit.get("data-deskripsi") if btn_edit else None
+                    btn_ket = btn_edit.get("data-keterangan") if btn_edit else None
+
+                    tgl_order = cols[0].get("data-order") or ""
+                    tgl_text = cols[1].text.strip() if len(cols) >= 6 else cols[0].text.strip()
+                    jam_text = cols[2].text.strip() if len(cols) >= 6 else ""
+
+                    final_tgl_iso = btn_tgl or tgl_order or tgl_text
+                    final_masuk = btn_masuk or (jam_text.split("-")[0].strip() if "-" in jam_text else "07:10")
+                    final_pulang = btn_pulang or (jam_text.split("-")[1].strip() if "-" in jam_text else "16:25")
+                    final_deskripsi = btn_desk or cols[3].text.strip()
+                    final_keterangan = btn_ket or cols[4].text.strip()
+                    status_verif = cols[5].text.strip() if len(cols) >= 6 else ""
+
                     entries.append({
                         "web_id": web_id,
+                        "tanggal_iso": final_tgl_iso,
                         "tanggal_text": tgl_text,
-                        "jam": jam,
-                        "pekerjaan": pekerjaan,
-                        "keterangan": ket,
+                        "jam_masuk": final_masuk,
+                        "jam_pulang": final_pulang,
+                        "jam": f"{final_masuk} - {final_pulang}",
+                        "pekerjaan": final_deskripsi,
+                        "keterangan": final_keterangan,
                         "status_verif": status_verif,
                     })
 

@@ -142,3 +142,65 @@ def get_back_to_logbook_keyboard() -> InlineKeyboardMarkup:
         ]
     )
 
+
+def get_month_calendar_keyboard(current_month: str, months_list: list, month_entries: list) -> InlineKeyboardMarkup:
+    """Membuat keyboard inline grid 3 kolom untuk tanggal logbook dan navigasi bulan."""
+    from app.services.logbook_service import format_short_date
+
+    rows = []
+    # 1. Grid tanggal (3 tombol per baris)
+    row = []
+    for entry in month_entries:
+        web_id = entry.get("web_id")
+        if not web_id:
+            continue
+        tgl_short = format_short_date(entry.get("tanggal_iso", "") or entry.get("tanggal_text", ""))
+        row.append(InlineKeyboardButton(text=f"📅 {tgl_short}", callback_data=f"log_edpick_{web_id}"))
+        if len(row) == 3:
+            rows.append(row)
+            row = []
+    if row:
+        rows.append(row)
+
+    # 2. Baris Navigasi Bulan
+    nav_row = []
+    if current_month in months_list:
+        curr_idx = months_list.index(current_month)
+        if curr_idx + 1 < len(months_list):
+            prev_m = months_list[curr_idx + 1]
+            nav_row.append(InlineKeyboardButton(text="⬅️ Bulan Sebelumnya", callback_data=f"log_edmonth_{prev_m}"))
+        if curr_idx - 1 >= 0:
+            next_m = months_list[curr_idx - 1]
+            nav_row.append(InlineKeyboardButton(text="Bulan Berikutnya ➡️", callback_data=f"log_edmonth_{next_m}"))
+    if nav_row:
+        rows.append(nav_row)
+
+    # 3. Tombol Kembali
+    rows.append([InlineKeyboardButton(text="⬅️ Kembali ke Menu Logbook", callback_data="log_menu_back")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def get_edit_detail_keyboard(any_changed: bool) -> InlineKeyboardMarkup:
+    """Membuat keyboard tombol aksi pengubahan field logbook dan submit ke DERMAGA."""
+    rows = [
+        [
+            InlineKeyboardButton(text="⏰ Ubah Jam Masuk", callback_data="log_edact_masuk"),
+            InlineKeyboardButton(text="⏰ Ubah Jam Pulang", callback_data="log_edact_pulang"),
+        ],
+        [
+            InlineKeyboardButton(text="📝 Ubah Pekerjaan", callback_data="log_edact_desk"),
+        ],
+        [
+            InlineKeyboardButton(
+                text="💾 Simpan Perubahan" if any_changed else "💾 Simpan (Belum Ada Perubahan)",
+                callback_data="log_edact_save",
+            )
+        ],
+        [
+            InlineKeyboardButton(text="⬅️ Pilih Tanggal Lain", callback_data="log_edact_backmonth"),
+            InlineKeyboardButton(text="❌ Batal", callback_data="log_edact_cancel"),
+        ],
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+

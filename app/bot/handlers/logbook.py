@@ -7,7 +7,7 @@ from datetime import datetime
 import html
 import json
 import time
-from typing import Optional
+from typing import Any, Optional
 from zoneinfo import ZoneInfo
 from aiogram import F, Router
 from aiogram.filters import Command

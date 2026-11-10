@@ -443,7 +443,7 @@ def render_locations_menu(chat_id: int) -> tuple:
     ]
     markup.row(*edit_btns)
 
-    markup.add(types.InlineKeyboardButton("⬅️ Kembali ke Menu Logbook", callback_data="log_menu_back"))
+    markup.add(types.InlineKeyboardButton("⬅️ Kembali ke Pengaturan", callback_data="log_menu_settings"))
     return text, markup
 
 def handle_manual_logbook_input(message, bot, target_date: str):
@@ -563,8 +563,8 @@ def build_days_checklist_keyboard(days_str: str):
         types.InlineKeyboardButton("❌ Matikan Semua", callback_data="log_dayps_none")
     )
 
-    # Baris 6: Selesai / Kembali ke Menu
-    markup.row(types.InlineKeyboardButton("💾 Selesai & Kembali", callback_data="log_menu_back"))
+    # Baris 6: Selesai / Kembali ke Pengaturan
+    markup.row(types.InlineKeyboardButton("💾 Selesai & Kembali", callback_data="log_menu_settings"))
     return markup
 
 # --- MANAJEMEN SESI EDIT LOGBOOK INTERAKTIF ---
@@ -844,6 +844,79 @@ def handle_input_edit_deskripsi(message, bot):
     session['deskripsi'] = val
     send_detail_view(bot, chat_id, old_message_id=prompt_id)
 
+def render_settings_menu(chat_id: int) -> tuple:
+    """Helper untuk merender menu Pengaturan Logbook (jadwal reminder, lokasi GPS)."""
+    user_meta = get_user_by_chat_id(chat_id)
+    markup = types.InlineKeyboardMarkup()
+    if not user_meta:
+        text = "⚠️ Akun Anda belum terdaftar di sistem logbook."
+        markup.add(types.InlineKeyboardButton("⬅️ Kembali ke Menu Logbook", callback_data="log_menu_back"))
+        return text, markup
+
+    reminder_time_str = user_meta.get('reminder_time', '16:05')
+    reminder_days_str = user_meta.get('reminder_days', '0,1,2,3,4')
+    reminder_days_display = format_reminder_days_display(reminder_days_str)
+    loc = get_user_location(chat_id)
+    lat_str = loc['lat']
+    lng_str = loc['lng']
+    akurasi_str = loc['akurasi']
+    prof_name = loc.get('profile_name', '🏢 Kantor (WFO)')
+    maps_url = f"https://www.google.com/maps?q={lat_str},{lng_str}"
+
+    text = (
+        "⚙️ <b>Pengaturan Logbook</b>\n\n"
+        "Ringkasan konfigurasi saat ini:\n"
+        f"⏰ Jam Pengingat: <b>{reminder_time_str} WIB</b>\n"
+        f"🗓 Hari Pengingat: <b>{reminder_days_display}</b>\n"
+        f"📍 Lokasi Aktif: <b>{prof_name}</b> (<a href=\"{maps_url}\"><code>{lat_str}, {lng_str}</code></a> ±{akurasi_str}m)\n\n"
+        "<i>Silakan pilih opsi pengaturan di bawah untuk mengubah:</i>"
+    )
+
+    btn_set_jam = types.InlineKeyboardButton("⏰ Jam Pengingat", callback_data="log_menu_set_jam")
+    btn_set_hari = types.InlineKeyboardButton("🗓 Hari Pengingat", callback_data="log_menu_set_hari")
+    btn_set_lokasi = types.InlineKeyboardButton("📍 Lokasi GPS (WFO/WFH)", callback_data="log_menu_set_lokasi")
+    btn_back = types.InlineKeyboardButton("⬅️ Kembali ke Menu Logbook", callback_data="log_menu_back")
+
+    markup.add(btn_set_jam, btn_set_hari)
+    markup.add(btn_set_lokasi)
+    markup.add(btn_back)
+    return text, markup
+
+def render_account_menu(chat_id: int) -> tuple:
+    """Helper untuk merender menu Akun & CLI Logbook."""
+    user = get_user_by_chat_id(chat_id)
+    markup = types.InlineKeyboardMarkup()
+    if not user:
+        text = "⚠️ Akun Anda belum terdaftar di sistem logbook."
+        markup.add(types.InlineKeyboardButton("⬅️ Kembali ke Menu Logbook", callback_data="log_menu_back"))
+        return text, markup
+
+    token_val = user.get('api_token', '')
+    text = (
+        f"👤 <b>Informasi Akun & CLI Logbook</b>\n\n"
+        f"• Username DERMAGA: <code>{user['username']}</code>\n"
+        f"• Chat ID: <code>{user['chat_id']}</code>\n"
+        f"• Terdaftar Sejak: <code>{user.get('created_at', '-')}</code>\n\n"
+        f"🔑 <b>API Token CLI:</b>\n"
+        f"<code>{token_val}</code>\n\n"
+        f"📦 <b>Download Logbook CLI:</b>\n"
+        f"• <a href=\"https://github.com/Oktavian19/bot-services/releases/download/cli-latest/logbook-cli-windows-x64.zip\">Windows (ZIP)</a> | <a href=\"https://github.com/Oktavian19/bot-services/releases/download/cli-latest/logbook-cli-linux-x64.zip\">Linux (ZIP)</a>\n\n"
+        f"📋 <b>Konfigurasi di Laptop:</b>\n"
+        f"Ekstrak ZIP, salin file <code>config.example.json</code> menjadi <code>config.json</code>, lalu sesuaikan field <code>api_token</code>:\n"
+        f"<pre>"
+        f'{{\n'
+        f'  "vps_endpoint": "{get_logbook_public_url()}",\n'
+        f'  "api_token": "{token_val}",\n'
+        f'  "location": "office"\n'
+        f'}}'
+        f"</pre>\n"
+        f"💡 <i>Field <code>location</code> bersifat opsional: gunakan <code>office</code> (WFO), <code>home</code> (WFH), atau <code>other</code>. Jika tidak disertakan, bot otomatis menggunakan profil aktif Anda.</i>"
+    )
+    markup.row(types.InlineKeyboardButton("🔄 Buat Ulang Token", callback_data="log_regen_token"))
+    markup.row(types.InlineKeyboardButton("🗑️ Hapus Akun", callback_data="log_menu_hapus"))
+    markup.row(types.InlineKeyboardButton("⬅️ Kembali ke Menu Logbook", callback_data="log_menu_back"))
+    return text, markup
+
 def render_logbook_menu(chat_id: int, user_id: int = None) -> tuple:
     """Helper untuk merender tampilan menu utama /logbook beserta Inline Keyboard."""
     user_meta = get_user_by_chat_id(chat_id)
@@ -864,14 +937,12 @@ def render_logbook_menu(chat_id: int, user_id: int = None) -> tuple:
 
     drafts = get_recent_drafts(chat_id=chat_id, limit=5) if user_meta else []
     username_str = user_meta['username'] if user_meta else "(Admin Mode)"
-    token_str = (user_meta['api_token'][:8] + "..." + user_meta['api_token'][-6:]) if (user_meta and user_meta.get('api_token')) else "-"
     reminder_time_str = user_meta.get('reminder_time', '16:05') if user_meta else '16:05'
     reminder_days_str = user_meta.get('reminder_days', '0,1,2,3,4') if user_meta else '0,1,2,3,4'
     reminder_days_display = format_reminder_days_display(reminder_days_str)
     loc = get_user_location(chat_id) if user_meta else {'lat': '-7.5815', 'lng': '112.6247', 'akurasi': '15', 'profile_name': '🏢 Kantor (WFO)'}
     lat_str = loc['lat']
     lng_str = loc['lng']
-    akurasi_str = loc['akurasi']
     prof_name = loc.get('profile_name', '🏢 Kantor (WFO)')
     maps_url = f"https://www.google.com/maps?q={lat_str},{lng_str}"
 
@@ -880,8 +951,7 @@ def render_logbook_menu(chat_id: int, user_id: int = None) -> tuple:
         f"👤 Akun DERMAGA: <code>{username_str}</code>\n"
         f"📍 Lokasi Aktif: <b>{prof_name}</b> (<a href=\"{maps_url}\"><code>{lat_str}, {lng_str}</code></a>)\n"
         f"⏰ Jam Pengingat: <b>{reminder_time_str} WIB</b>\n"
-        f"🗓 Hari Pengingat: <b>{reminder_days_display}</b>\n"
-        f"🔑 Token CLI: <code>{token_str}</code>\n\n"
+        f"🗓 Hari Pengingat: <b>{reminder_days_display}</b>\n\n"
         f"<b>Riwayat Draf Anda Terakhir:</b>\n"
     )
 
@@ -906,19 +976,16 @@ def render_logbook_menu(chat_id: int, user_id: int = None) -> tuple:
 
     text += "\nSilakan pilih menu di bawah ini:"
 
-    # Tombol interaktif utama
+    # Tombol interaktif utama (dikelompokkan rapi)
     btn_cek = types.InlineKeyboardButton("📋 Cek Logbook", callback_data="log_menu_cek")
     btn_edit = types.InlineKeyboardButton("✏️ Edit Logbook", callback_data="log_menu_edit")
-    btn_token = types.InlineKeyboardButton("🔑 Token CLI", callback_data="log_menu_token")
+    btn_settings = types.InlineKeyboardButton("⚙️ Pengaturan", callback_data="log_menu_settings")
+    btn_account = types.InlineKeyboardButton("👤 Akun & CLI", callback_data="log_menu_account")
     btn_refresh = types.InlineKeyboardButton("🔄 Refresh", callback_data="log_menu_refresh")
-    btn_set_jam = types.InlineKeyboardButton("⏰ Jam Pengingat", callback_data="log_menu_set_jam")
-    btn_set_hari = types.InlineKeyboardButton("🗓 Hari Pengingat", callback_data="log_menu_set_hari")
-    btn_set_lokasi = types.InlineKeyboardButton("📍 Lokasi GPS", callback_data="log_menu_set_lokasi")
-    btn_hapus = types.InlineKeyboardButton("🗑️ Hapus Akun", callback_data="log_menu_hapus")
+
     markup.add(btn_cek, btn_edit)
-    markup.add(btn_token, btn_refresh)
-    markup.add(btn_set_jam, btn_set_hari)
-    markup.add(btn_set_lokasi, btn_hapus)
+    markup.add(btn_settings, btn_account)
+    markup.add(btn_refresh)
 
     if admin:
         btn_admin = types.InlineKeyboardButton("👥 Daftar Pengguna (Admin)", callback_data="log_menu_admin_users")
@@ -1380,37 +1447,22 @@ def init_logbook(bot):
                 bot.edit_message_text(f"❌ Gagal mengambil data DERMAGA: {err}", call.message.chat.id, call.message.message_id, reply_markup=markup)
             return
 
-        elif data == "log_menu_token":
+        elif data == "log_menu_settings":
             bot.answer_callback_query(call.id)
-            user = get_user_by_chat_id(call.message.chat.id)
-            if not user:
-                markup = types.InlineKeyboardMarkup()
-                markup.add(types.InlineKeyboardButton("⬅️ Kembali ke Menu Logbook", callback_data="log_menu_back"))
-                bot.edit_message_text("⚠️ Akun Anda belum terdaftar.", call.message.chat.id, call.message.message_id, reply_markup=markup)
-                return
+            text, markup = render_settings_menu(call.message.chat.id)
+            try:
+                bot.edit_message_text(text, call.message.chat.id, call.message.message_id, parse_mode="HTML", reply_markup=markup)
+            except Exception:
+                bot.send_message(call.message.chat.id, text, parse_mode="HTML", reply_markup=markup)
+            return
 
-            token_val = user.get('api_token', '')
-            text = (
-                f"🔑 <b>API Token CLI Logbook Anda</b>\n\n"
-                f"👤 Akun: <code>{user['username']}</code>\n"
-                f"Token:\n<code>{token_val}</code>\n\n"
-                f"📦 <b>Download Logbook CLI:</b>\n"
-                f"• <a href=\"https://github.com/Oktavian19/bot-services/releases/download/cli-latest/logbook-cli-windows-x64.zip\">Windows (ZIP)</a> | <a href=\"https://github.com/Oktavian19/bot-services/releases/download/cli-latest/logbook-cli-linux-x64.zip\">Linux (ZIP)</a>\n\n"
-                f"📋 <b>Konfigurasi di Laptop:</b>\n"
-                f"Ekstrak ZIP, salin file <code>config.example.json</code> menjadi <code>config.json</code>, lalu sesuaikan field <code>api_token</code>:\n"
-                f"<pre>"
-                f'{{\n'
-                f'  "vps_endpoint": "{get_logbook_public_url()}",\n'
-                f'  "api_token": "{token_val}",\n'
-                f'  "location": "office"\n'
-                f'}}'
-                f"</pre>\n"
-                f"💡 <i>Field <code>location</code> bersifat opsional: gunakan <code>office</code> (WFO), <code>home</code> (WFH), atau <code>other</code>. Jika tidak disertakan, bot otomatis menggunakan profil aktif Anda.</i>"
-            )
-            markup = types.InlineKeyboardMarkup()
-            markup.add(types.InlineKeyboardButton("🔄 Buat Ulang Token", callback_data="log_regen_token"))
-            markup.add(types.InlineKeyboardButton("⬅️ Kembali ke Menu Logbook", callback_data="log_menu_back"))
-            bot.edit_message_text(text, call.message.chat.id, call.message.message_id, parse_mode="HTML", reply_markup=markup)
+        elif data in ("log_menu_account", "log_menu_token"):
+            bot.answer_callback_query(call.id)
+            text, markup = render_account_menu(call.message.chat.id)
+            try:
+                bot.edit_message_text(text, call.message.chat.id, call.message.message_id, parse_mode="HTML", reply_markup=markup)
+            except Exception:
+                bot.send_message(call.message.chat.id, text, parse_mode="HTML", reply_markup=markup)
             return
 
         elif data == "log_regen_token":
@@ -1428,7 +1480,7 @@ def init_logbook(bot):
                 f"⚠️ Jangan lupa untuk memperbarui field <code>api_token</code> pada file <code>config.json</code> di laptop Anda."
             )
             markup = types.InlineKeyboardMarkup()
-            markup.add(types.InlineKeyboardButton("⬅️ Kembali ke Menu Logbook", callback_data="log_menu_back"))
+            markup.add(types.InlineKeyboardButton("⬅️ Kembali ke Akun & CLI", callback_data="log_menu_account"))
             bot.edit_message_text(text, call.message.chat.id, call.message.message_id, parse_mode="HTML", reply_markup=markup)
             return
 
@@ -1450,7 +1502,7 @@ def init_logbook(bot):
                 f"<i>Kirimkan balasan pesan dengan format di atas atau klik Batal:</i>"
             )
             markup = types.InlineKeyboardMarkup()
-            markup.add(types.InlineKeyboardButton("❌ Batal", callback_data="log_menu_back"))
+            markup.add(types.InlineKeyboardButton("❌ Batal", callback_data="log_menu_settings"))
             msg = bot.send_message(call.message.chat.id, text, parse_mode="HTML", reply_markup=markup)
             bot.register_next_step_handler(msg, handle_set_jam_input, bot)
             return
@@ -1628,7 +1680,7 @@ def init_logbook(bot):
             )
             markup = types.InlineKeyboardMarkup(row_width=2)
             btn_confirm = types.InlineKeyboardButton("⚠️ Ya, Hapus Akun", callback_data="log_confirm_hapus_akun")
-            btn_cancel = types.InlineKeyboardButton("❌ Batal", callback_data="log_menu_back")
+            btn_cancel = types.InlineKeyboardButton("❌ Batal", callback_data="log_menu_account")
             markup.add(btn_confirm, btn_cancel)
             bot.edit_message_text(text, call.message.chat.id, call.message.message_id, parse_mode="HTML", reply_markup=markup)
             return

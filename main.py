@@ -119,51 +119,27 @@ async def main() -> None:
     # 9. Jalankan HTTP API Receiver Server (aiohttp.web untuk logbook CLI)
     api_runner: web.AppRunner = await start_api_server(bot)
 
-    # 10. Konfigurasi Graceful Shutdown
-    loop = asyncio.get_running_loop()
-    stop_event = asyncio.Event()
-
-    def _signal_handler(sig_name: str) -> None:
-        logger.warning(f"Sinyal {sig_name} diterima. Memulai proses graceful shutdown...")
-        stop_event.set()
-
-    for sig in (signal.SIGINT, signal.SIGTERM):
-        try:
-            loop.add_signal_handler(sig, lambda s=sig.name: _signal_handler(s))
-        except (NotImplementedError, RuntimeError):
-            # Fallback untuk platform/lingkungan tanpa add_signal_handler
-            pass
-
+    # 10. Jalankan Polling Utama dengan Graceful Cleanup
     logger.info("Telegram Bot siap dan berjalan (Polling mode aktif)...")
-
-    # Jalankan polling bersamaan dengan pemantau sinyal shutdown
-    polling_task = asyncio.create_task(
-        dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types()),
-        name="telegram_polling_task",
-    )
-
-    # Tunggu sinyal shutdown
-    await stop_event.wait()
-
-    # --- PROSES CLEANUP / SHUTDOWN ---
-    logger.info("Menghentikan polling Telegram...")
-    await dp.stop_polling()
-    polling_task.cancel()
     try:
-        await polling_task
-    except asyncio.CancelledError:
-        pass
+        # dp.start_polling menangani SIGINT & SIGTERM secara native dan memblokir hingga shutdown dipicu
+        await dp.start_polling(
+            bot,
+            allowed_updates=dp.resolve_used_update_types(),
+        )
+    finally:
+        logger.info("Memulai proses graceful shutdown...")
 
-    logger.info("Mematikan background scheduler...")
-    await stop_scheduler_and_tasks(scheduler)
+        logger.info("Mematikan background scheduler...")
+        await stop_scheduler_and_tasks(scheduler)
 
-    logger.info("Mematikan HTTP API receiver server...")
-    await api_runner.cleanup()
+        logger.info("Mematikan HTTP API receiver server...")
+        await api_runner.cleanup()
 
-    logger.info("Menutup sesi HTTP client bot...")
-    await bot.session.close()
+        logger.info("Menutup sesi HTTP client bot...")
+        await bot.session.close()
 
-    logger.info("Aplikasi bot-services berhasil dimatikan secara bersih (Graceful Shutdown selesai).")
+        logger.info("Aplikasi bot-services berhasil dimatikan secara bersih (Graceful Shutdown selesai).")
 
 
 if __name__ == "__main__":
@@ -171,3 +147,6 @@ if __name__ == "__main__":
         asyncio.run(main())
     except (KeyboardInterrupt, SystemExit):
         pass
+    except Exception as exc:
+        logger.critical(f"Aplikasi bot-services terhenti karena kesalahan fatal: {exc}")
+        raise

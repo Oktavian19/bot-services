@@ -15,16 +15,18 @@ speedtest_lock = asyncio.Lock()
 async def check_connection_async() -> bool:
     """Mengecek apakah server terhubung ke internet via socket non-blocking ke 1.1.1.1:53."""
     try:
-        loop = asyncio.get_running_loop()
         # Non-blocking connection check ke Cloudflare DNS port 53
         _, writer = await asyncio.wait_for(
-            loop.open_connection("1.1.1.1", 53),
+            asyncio.open_connection("1.1.1.1", 53),
             timeout=3.0,
         )
         writer.close()
         await writer.wait_closed()
         return True
     except (OSError, asyncio.TimeoutError):
+        return False
+    except Exception as e:
+        logger.debug(f"[JARINGAN] Pengecekan koneksi gagal: {e}")
         return False
 
 

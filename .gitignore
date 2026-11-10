@@ -11,6 +11,11 @@ __pycache__/
 *.bak
 *.sqlite
 *.sqlite3
+data/
+
+# Logs & Backups
+logs/
+backups/
 
 # Environment
 .env

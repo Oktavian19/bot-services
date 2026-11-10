@@ -1,6 +1,17 @@
-beautifulsoup4==4.15.0
+# --- FRAMEWORK BOT & ASYNC CORE ---
+aiogram==3.31.0
+aiohttp==3.14.1
+aiosqlite==0.22.1
+APScheduler==3.11.3
+
+# --- KONFIGURASI & LOGGING ---
+pydantic==2.13.5
+pydantic-settings==2.16.2
+python-dotenv==1.2.4
+loguru==0.7.3
+
+# --- KRIPTOGRAFI, PARSING & TIMEZONE ---
 cryptography==49.0.0
-pyTelegramBotAPI==4.34.0
+beautifulsoup4==4.15.0
 pytz==2026.2
-Requests==2.34.2
-urllib3==2.7.0
+tzlocal==5.4.5

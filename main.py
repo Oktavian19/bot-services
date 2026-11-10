@@ -1,127 +1,149 @@
-import os
-import telebot
-import socket
-import urllib3.util.connection as urllib3_cn
-from telebot import types
-from datetime import datetime
-import threading
+"""
+Entrypoint modern aplikasi bot-services.
+Dibangun menggunakan aiogram v3 (asyncio native), Pydantic Settings, Loguru,
+APScheduler, aiohttp web server receiver, dan penanganan sinyal Graceful Shutdown.
+"""
 
-# Import modul
-# [MODUL MAGANG ARSIP] Un-comment baris di bawah ini jika ingin mengaktifkan kembali:
-# from modul.magang import main as magang
-from modul.jaringan import main as jaringan
-from modul.reminder import main as reminder
-from modul.bensin import main as bensin
-from modul.logbook import main as logbook
+import asyncio
+import signal
+from aiogram import Bot, Dispatcher
+from aiogram.client.default import DefaultBotProperties
+from aiogram.enums import ParseMode
+from aiogram.fsm.storage.memory import MemoryStorage
+from aiogram.types import BotCommand
+from aiohttp import web
+from app.bot.handlers import (
+    admin,
+    common,
+    fuel,
+    logbook,
+    magang_archived,
+    network,
+    reminder,
+)
+from app.bot.middlewares.auth import AuthMiddleware
+from app.bot.middlewares.logging import LoggingMiddleware
+from app.bot.middlewares.throttling import ThrottlingMiddleware
+from app.core.config import get_settings
+from app.core.logger import logger, setup_logger
+from app.database.fuel_repo import init_fuel_db
+from app.database.logbook_repo import init_logbook_db
+from app.database.reminder_repo import init_reminder_db
+from app.services.logbook_api import start_api_server
+from app.services.scheduler import start_scheduler_and_tasks, stop_scheduler_and_tasks
 
-# --- PATCH FORCE IPV4 ---
-def allowed_gai_family():
-    return socket.AF_INET
-urllib3_cn.allowed_gai_family = allowed_gai_family
 
-# --- CONFIGURATION ---
-TELEGRAM_TOKEN = os.environ.get('TELEGRAM_TOKEN')
-bot = telebot.TeleBot(TELEGRAM_TOKEN)
-
-# --- SETUP MENU COMMAND ---
-def setup_bot_commands():
+async def setup_bot_commands(bot: Bot) -> None:
+    """Mendaftarkan menu rekomendasi perintah Telegram ke BotFather / UI klien."""
     commands = [
-        types.BotCommand("start", "Tampilkan menu utama"),
-        # [MODUL MAGANG ARSIP] Un-comment baris di bawah jika modul magang diaktifkan:
-        # types.BotCommand("magang", "Pusat kendali pemantauan magang"),
-        types.BotCommand("reminder", "Manajemen agenda & pengingat"),
-        types.BotCommand("ping", "Cek status koneksi server"),
-        types.BotCommand("bensin", "Catatan konsumsi & riwayat BBM"),
-        types.BotCommand("logbook", "Pusat kendali logbook DERMAGA"),
-        types.BotCommand("set_jam_logbook", "Atur jam pengingat logbook harian"),
-        types.BotCommand("set_hari_logbook", "Atur hari pengingat logbook (default: Senin-Jumat)"),
-        types.BotCommand("set_lokasi_logbook", "Atur koordinat GPS lokasi magang"),
+        BotCommand(command="start", description="Tampilkan menu utama"),
+        BotCommand(command="reminder", description="Manajemen agenda & pengingat"),
+        BotCommand(command="ping", description="Cek status koneksi server"),
+        BotCommand(command="speedtest", description="Ukur kecepatan internet server (Admin)"),
+        BotCommand(command="bensin", description="Catatan konsumsi & riwayat BBM"),
+        BotCommand(command="logbook", description="Pusat kendali logbook DERMAGA"),
+        BotCommand(command="set_jam_logbook", description="Atur jam pengingat logbook harian"),
+        BotCommand(command="set_hari_logbook", description="Atur hari pengingat logbook"),
+        BotCommand(command="set_lokasi_logbook", description="Atur koordinat GPS lokasi magang"),
     ]
-    bot.set_my_commands(commands)
-    print("[+] Menu rekomendasi command berhasil diterapkan!")
+    await bot.set_my_commands(commands)
+    logger.info("[BOT] Menu rekomendasi perintah Telegram berhasil diterapkan!")
 
-# --- PERINTAH MENU DENGAN TOMBOL INLINE ---
-@bot.message_handler(commands=['start'])
-def send_menu_utama(message):
-    
-    markup = types.InlineKeyboardMarkup(row_width=2) 
-    
-    tombol_ping = types.InlineKeyboardButton("🏓 Ping Server", callback_data="cb_ping")
-    # [MODUL MAGANG ARSIP] Un-comment baris di bawah dan sertakan tombol_magang ke markup.add(...) jika modul diaktifkan:
-    # tombol_magang = types.InlineKeyboardButton("🎓 Pusat Magang", callback_data="cb_magang")
-    tombol_reminder = types.InlineKeyboardButton("🔔 Pengingat", callback_data="cb_reminder")
-    tombol_speed = types.InlineKeyboardButton("🚀 Speedtest", callback_data="cb_speedtest")
-    tombol_bensin = types.InlineKeyboardButton("⛽ BBM Motor", callback_data="cb_bensin")
-    tombol_logbook = types.InlineKeyboardButton("📖 Logbook", callback_data="cb_logbook")
-    
-    markup.add(tombol_ping, tombol_reminder, tombol_speed, tombol_bensin, tombol_logbook)
-    
-    bot.send_message(message.chat.id, "🎛 <b>Pusat Kendali Server</b>\nSilakan pilih salah satu menu di bawah ini:", 
-                     parse_mode="HTML", reply_markup=markup)
 
-# --- HANDLER KLIK TOMBOL ---
-@bot.callback_query_handler(func=lambda call: call.data.startswith('cb_'))
-def callback_listener(call):
-    bot.answer_callback_query(call.id)
-    
-    if call.data == "cb_ping":
-        waktu = datetime.now().strftime('%H:%M:%S')
-        balasan = (
-            f"🏓 <b>Pong!</b>\n\n"
-            f"Server Debian dalam kondisi <b>ONLINE</b> dan terhubung ke jaringan.\n"
-            f"⏱ <code>{waktu}</code>"
-        )
-        bot.send_message(call.message.chat.id, balasan, parse_mode="HTML")
-        
-    # [MODUL MAGANG ARSIP] Un-comment di bawah jika modul magang diaktifkan:
-    # elif call.data == "cb_magang":
-    #     call.message.text = "/magang"
-    #     bot.process_new_messages([call.message])
-        
-    elif call.data == "cb_reminder":
-        call.message.text = "/reminder"
-        bot.process_new_messages([call.message])
-        
-    elif call.data == "cb_speedtest":
-        call.message.text = "/speedtest"
-        bot.process_new_messages([call.message])
+async def main() -> None:
+    """Fungsi orkestrasi utama asinkron."""
+    # 1. Inisialisasi Logger Terpusat
+    setup_logger()
+    logger.info("Memulai inisialisasi bot-services (aiogram v3 native)...")
 
-    elif call.data == "cb_bensin":
-        call.message.text = "/bensin"
-        bot.process_new_messages([call.message])
+    # 2. Muat Konfigurasi via Pydantic Settings
+    settings = get_settings()
 
-    elif call.data == "cb_logbook":
-        call.message.text = "/logbook"
-        bot.process_new_messages([call.message])
+    # 3. Inisialisasi Database SQLite (Async Non-Destruktif)
+    logger.info("Menginisialisasi basis data SQLite asinkron...")
+    await init_reminder_db()
+    await init_fuel_db()
+    await init_logbook_db()
 
-if __name__ == '__main__':
-    print("Memulai inisialisasi layanan...")
-    
-    setup_bot_commands()
+    # 4. Inisialisasi Bot & Dispatcher
+    bot = Bot(
+        token=settings.TELEGRAM_TOKEN,
+        default=DefaultBotProperties(parse_mode=ParseMode.HTML),
+    )
+    dp = Dispatcher(storage=MemoryStorage())
 
-    # Inisialisasi Handler Modul
-    # [MODUL MAGANG ARSIP] Un-comment baris di bawah jika ingin mengaktifkan modul magang:
-    # magang.init_magang(bot)
-    jaringan.init_jaringan(bot)
-    reminder.init_reminder(bot)
-    bensin.init_bensin(bot)
-    logbook.init_logbook(bot)
+    # 5. Pasang Middlewares
+    dp.update.outer_middleware(LoggingMiddleware())
+    dp.update.middleware(AuthMiddleware())
+    dp.callback_query.middleware(ThrottlingMiddleware(rate_limit_seconds=0.4))
 
-    print("Memulai background scheduler untuk reminder...")
-    thread_scheduler = threading.Thread(target=reminder.jalankan_scheduler, args=(bot,))
-    thread_scheduler.daemon = True
-    thread_scheduler.start()      
+    # 6. Registrasi Routers Modular
+    dp.include_router(common.router)
+    dp.include_router(network.router)
+    dp.include_router(reminder.router)
+    dp.include_router(fuel.router)
+    dp.include_router(logbook.router)
+    dp.include_router(admin.router)
+    dp.include_router(magang_archived.router)
 
-    print("Memulai background receiver untuk logbook...")
-    thread_logbook = threading.Thread(target=logbook.jalankan_server, args=(bot,))
-    thread_logbook.daemon = True
-    thread_logbook.start()
+    # 7. Setup Perintah Bot
+    await setup_bot_commands(bot)
 
-    print("Memulai background scheduler untuk logbook reminder...")
-    thread_logbook_scheduler = threading.Thread(target=logbook.jalankan_scheduler, args=(bot,))
-    thread_logbook_scheduler.daemon = True
-    thread_logbook_scheduler.start()
+    # 8. Jalankan Background Schedulers (APScheduler & Network Monitor Task)
+    scheduler = start_scheduler_and_tasks(bot)
 
-    print("Telegram bot siap dan berjalan!")
-    bot.infinity_polling(timeout=20, long_polling_timeout=20)
+    # 9. Jalankan HTTP API Receiver Server (aiohttp.web untuk logbook CLI)
+    api_runner: web.AppRunner = await start_api_server(bot)
 
+    # 10. Konfigurasi Graceful Shutdown
+    loop = asyncio.get_running_loop()
+    stop_event = asyncio.Event()
+
+    def _signal_handler(sig_name: str) -> None:
+        logger.warning(f"Sinyal {sig_name} diterima. Memulai proses graceful shutdown...")
+        stop_event.set()
+
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        try:
+            loop.add_signal_handler(sig, lambda s=sig.name: _signal_handler(s))
+        except (NotImplementedError, RuntimeError):
+            # Fallback untuk platform/lingkungan tanpa add_signal_handler
+            pass
+
+    logger.info("Telegram Bot siap dan berjalan (Polling mode aktif)...")
+
+    # Jalankan polling bersamaan dengan pemantau sinyal shutdown
+    polling_task = asyncio.create_task(
+        dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types()),
+        name="telegram_polling_task",
+    )
+
+    # Tunggu sinyal shutdown
+    await stop_event.wait()
+
+    # --- PROSES CLEANUP / SHUTDOWN ---
+    logger.info("Menghentikan polling Telegram...")
+    await dp.stop_polling()
+    polling_task.cancel()
+    try:
+        await polling_task
+    except asyncio.CancelledError:
+        pass
+
+    logger.info("Mematikan background scheduler...")
+    await stop_scheduler_and_tasks(scheduler)
+
+    logger.info("Mematikan HTTP API receiver server...")
+    await api_runner.cleanup()
+
+    logger.info("Menutup sesi HTTP client bot...")
+    await bot.session.close()
+
+    logger.info("Aplikasi bot-services berhasil dimatikan secara bersih (Graceful Shutdown selesai).")
+
+
+if __name__ == "__main__":
+    try:
+        asyncio.run(main())
+    except (KeyboardInterrupt, SystemExit):
+        pass

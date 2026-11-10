@@ -50,6 +50,7 @@ async def setup_bot_commands(bot: Bot) -> None:
         BotCommand(command="daftar_logbook", description="Pendaftaran akun DERMAGA"),
         BotCommand(command="token_logbook", description="Kelola API token CLI logbook"),
         BotCommand(command="cek_logbook", description="Cek tabel logbook web DERMAGA"),
+        BotCommand(command="link_verif", description="Ambil link verifikasi pembimbing & dosen"),
         BotCommand(command="set_jam_logbook", description="Atur jam pengingat harian"),
         BotCommand(command="set_hari_logbook", description="Atur jadwal hari pengingat"),
         BotCommand(command="set_lokasi_logbook", description="Atur profil koordinat GPS magang"),

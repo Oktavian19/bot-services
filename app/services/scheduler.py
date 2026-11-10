@@ -17,10 +17,12 @@ from app.database.logbook_repo import (
     complete_reminder_for_today,
     get_active_reminder_users,
     get_or_create_reminder_state,
+    get_weekly_reminder_state,
     has_today_draft_or_submission,
+    set_weekly_reminder_status,
     update_reminder_state,
 )
-from app.services.logbook_service import fetch_dermaga_table
+from app.services.logbook_service import fetch_dermaga_table, fetch_weekly_logbook_cards
 from app.services.network_service import network_monitor_task
 from app.services.reminder_service import get_local_now, process_due_reminders
 
@@ -106,6 +108,103 @@ async def process_logbook_reminders(bot: Bot) -> None:
         logger.error(f"[LOGBOOK-SCHEDULER - ERROR] Error pada evaluasi pengingat logbook: {e}")
 
 
+async def process_weekly_signature_reminders(bot: Bot) -> None:
+    """Mengevaluasi dan mengingatkan tanda tangan/pengajuan logbook mingguan pada slider DERMAGA."""
+    now = get_local_now()
+    today = now.date()
+    today_str = now.strftime("%Y-%m-%d")
+
+    try:
+        active_users = await get_active_reminder_users()
+        for user in active_users:
+            chat_id = user["chat_id"]
+            try:
+                cards = await fetch_weekly_logbook_cards(chat_id)
+            except Exception as e:
+                logger.warning(f"[LOGBOOK-WEEKLY] Gagal mengambil kartu mingguan untuk User {chat_id}: {e}")
+                continue
+
+            unsubmitted_cards = []
+            for card in cards:
+                data_awal = card.get("data_awal")
+                status_raw = card.get("status", "").lower()
+                if not data_awal:
+                    continue
+
+                try:
+                    start_date = datetime.strptime(data_awal, "%Y-%m-%d").date()
+                    sunday_date = start_date + timedelta(days=6)
+                except Exception:
+                    continue
+
+                # Pengingat dimulai dari hari Minggu di minggu tersebut
+                if today < sunday_date:
+                    continue
+
+                state = await get_weekly_reminder_state(chat_id, data_awal)
+                current_status = state.get("status") if state else "idle"
+
+                # Jika di DERMAGA sudah diajukan / diverifikasi, tandai selesai
+                if "menunggu verifikasi" in status_raw or "verif" in status_raw:
+                    if current_status != "completed":
+                        await set_weekly_reminder_status(chat_id, data_awal, status="completed", week_label=card["label"])
+                    continue
+
+                # Jika masih 'Belum diajukan'
+                if "belum diajukan" in status_raw:
+                    if current_status == "stopped":
+                        continue
+
+                    # Hindari pengiriman ganda di hari yang sama
+                    if state and state.get("last_reminded_date") == today_str:
+                        continue
+
+                    unsubmitted_cards.append(card)
+
+            if unsubmitted_cards:
+                lines = []
+                stop_buttons = []
+                for c in unsubmitted_cards:
+                    lines.append(f"• <b>{c['label']}</b> (<code>{c['rentang_tanggal']}</code>) — <i>{c['hari_terisi']} hari terisi</i>")
+                    stop_buttons.append([
+                        InlineKeyboardButton(
+                            text=f"🔕 Berhenti Ingatkan {c['label']}",
+                            callback_data=f"log_stop_week_{c['data_awal']}",
+                        )
+                    ])
+
+                text = (
+                    "⚠️ <b>Pengingat Tanda Tangan Logbook Mingguan</b>\n\n"
+                    f"Halo <b>{user['username']}</b>, terdeteksi terdapat logbook mingguan yang <b>belum diajukan / ditandatangani</b>:\n\n"
+                    + "\n".join(lines) + "\n\n"
+                    "Mohon segera buka portal DERMAGA untuk menandatangani dan mengajukan logbook tersebut ke Dosen & Supervisor:\n"
+                    "🔗 <a href='https://jti.polinema.ac.id/dermaga/mahasiswa/monitoring'>Buka Monitoring DERMAGA</a>"
+                )
+
+                keyboard_rows = [
+                    [InlineKeyboardButton(text="🌐 Buka Monitoring DERMAGA", url="https://jti.polinema.ac.id/dermaga/mahasiswa/monitoring")]
+                ]
+                keyboard_rows.extend(stop_buttons)
+                keyboard = InlineKeyboardMarkup(inline_keyboard=keyboard_rows)
+
+                try:
+                    await bot.send_message(chat_id=chat_id, text=text, parse_mode="HTML", reply_markup=keyboard)
+                    for c in unsubmitted_cards:
+                        await set_weekly_reminder_status(
+                            chat_id,
+                            c["data_awal"],
+                            status="reminded",
+                            week_label=c["label"],
+                            last_reminded_date=today_str,
+                        )
+                    logger.info(f"[LOGBOOK-WEEKLY] Notifikasi tanda tangan mingguan terkirim ke User {chat_id} ({len(unsubmitted_cards)} minggu).")
+                except Exception as err:
+                    logger.error(f"[LOGBOOK-WEEKLY] Gagal mengirim pesan ke {chat_id}: {err}")
+
+    except Exception as e:
+        logger.error(f"[LOGBOOK-WEEKLY - ERROR] Error pada evaluasi pengingat mingguan: {e}")
+
+
 def setup_scheduler(bot: Bot) -> AsyncIOScheduler:
     """Mengonfigurasi dan menjalankan AsyncIOScheduler untuk tugas-tugas terjadwal."""
     settings = get_settings()
@@ -129,6 +228,18 @@ def setup_scheduler(bot: Bot) -> AsyncIOScheduler:
         second=0,
         args=[bot],
         id="reminder_logbook_job",
+        replace_existing=True,
+    )
+
+    # 3. Job evaluasi reminder tanda tangan mingguan setiap hari pukul 08:00 WIB
+    scheduler.add_job(
+        process_weekly_signature_reminders,
+        trigger="cron",
+        hour=8,
+        minute=0,
+        second=0,
+        args=[bot],
+        id="weekly_signature_job",
         replace_existing=True,
     )
 

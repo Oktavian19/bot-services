@@ -8,6 +8,7 @@ import json
 import math
 import random
 import re
+import time
 from typing import Any, List, Optional
 import aiohttp
 from bs4 import BeautifulSoup
@@ -325,6 +326,176 @@ async def fetch_dermaga_table(chat_id: int) -> List[dict[str, Any]]:
                     })
 
         return entries
+
+
+def parse_weekly_cards_from_html(html_text: str) -> List[dict[str, Any]]:
+    """Mengekstrak data seluruh kartu minggu (minggu-card) dari HTML halaman monitoring DERMAGA."""
+    soup = BeautifulSoup(html_text, "html.parser")
+    cards = soup.find_all(class_="minggu-card")
+    results = []
+    seen = set()
+
+    for card in cards:
+        data_awal = card.get("data-awal", "").strip()
+        lbl_elem = card.find(class_="minggu-label")
+        label = lbl_elem.get_text(strip=True) if lbl_elem else ""
+
+        # Dedup jika elemen terduplikasi pada DOM
+        card_key = (data_awal, label)
+        if card_key in seen:
+            continue
+        seen.add(card_key)
+
+        date_div = card.find(class_="text-muted")
+        rentang_tanggal = date_div.get_text(strip=True) if date_div else ""
+
+        # Hitung hari terisi
+        hari_terisi = 0
+        for d in card.find_all("div"):
+            if "hari terisi" in d.text:
+                m = re.search(r"(\d+)\s*hari", d.text)
+                if m:
+                    hari_terisi = int(m.group(1))
+                break
+
+        # Ambil status badge
+        status = "Belum diajukan"
+        badges = card.find_all(class_="badge")
+        for b in badges:
+            txt = b.get_text(strip=True)
+            if txt != "Minggu ini":
+                status = txt
+                break
+
+        results.append({
+            "label": label,
+            "data_awal": data_awal,
+            "rentang_tanggal": rentang_tanggal,
+            "hari_terisi": hari_terisi,
+            "status": status,
+            "is_minggu_ini": "minggu-berjalan" in card.get("class", []),
+        })
+
+    return results
+
+
+async def fetch_weekly_logbook_cards(chat_id: int) -> List[dict[str, Any]]:
+    """Mengambil daftar kartu minggu (minggu-card) dari slider di portal DERMAGA secara asinkron."""
+    cred = await get_user_credential(chat_id)
+    if not cred:
+        raise ValueError("Kredensial DERMAGA tidak ditemukan. Silakan login kembali.")
+
+    username, password = cred
+    timeout = aiohttp.ClientTimeout(total=30)
+
+    async with aiohttp.ClientSession(headers=DEFAULT_HEADERS, timeout=timeout) as session:
+        # 1. Login
+        async with session.get(LOGIN_URL) as resp:
+            soup = BeautifulSoup(await resp.text(), "html.parser")
+            csrf_token = soup.find("input", {"name": "csrf_test_name"})["value"]
+
+        payload = {"username": username, "password": password, "csrf_test_name": csrf_token}
+        async with session.post(LOGIN_URL, data=payload, allow_redirects=True) as login_resp:
+            if "mahasiswa" not in str(login_resp.url) and "Log Out" not in await login_resp.text():
+                raise PermissionError("Autentikasi ke DERMAGA gagal. Kredensial mungkin berubah.")
+
+        # 2. Ambil halaman monitoring
+        async with session.get(MONITORING_URL) as mon_resp:
+            mon_html = await mon_resp.text()
+
+    return parse_weekly_cards_from_html(mon_html)
+
+
+def parse_weeks_and_parties_from_html(html_text: str) -> tuple[dict[str, Any], dict[str, str]]:
+    """
+    Mengekstrak data konstanta JavaScript WEEKS dan NAMA_PIHAK dari halaman monitoring DERMAGA.
+    Mengembalikan tuple: (weeks_dict, parties_dict).
+    """
+    weeks_data: dict[str, Any] = {}
+    parties: dict[str, str] = {
+        "supervisor": "Pembimbing Lapangan",
+        "dosen": "Dosen Pembimbing",
+    }
+
+    # 1. Ekstrak WEEKS menggunakan JSONDecoder raw_decode untuk parsing robust
+    idx = html_text.find("const WEEKS =")
+    if idx != -1:
+        brace_idx = html_text.find("{", idx)
+        if brace_idx != -1:
+            try:
+                decoder = json.JSONDecoder()
+                weeks_data, _ = decoder.raw_decode(html_text[brace_idx:])
+            except Exception as e:
+                logger.warning(f"[LOGBOOK-SCRAPE] Gagal parse JSON WEEKS via raw_decode: {e}")
+                m = re.search(r"const\s+WEEKS\s*=\s*(\{.*?\});", html_text, re.DOTALL)
+                if m:
+                    try:
+                        weeks_data = json.loads(m.group(1))
+                    except Exception:
+                        pass
+
+    # 2. Ekstrak NAMA_PIHAK
+    m_pihak = re.search(r"const\s+NAMA_PIHAK\s*=\s*\{([^}]+)\};", html_text, re.DOTALL)
+    if m_pihak:
+        content = m_pihak.group(1)
+        sup = re.search(r'supervisor:\s*["\']([^"\']+)["\']', content)
+        dos = re.search(r'dosen:\s*["\']([^"\']+)["\']', content)
+        if sup:
+            parties["supervisor"] = sup.group(1).strip()
+        if dos:
+            parties["dosen"] = dos.group(1).strip()
+
+    return weeks_data, parties
+
+
+async def fetch_weeks_and_parties(chat_id: int) -> tuple[dict[str, Any], dict[str, str]]:
+    """Mengambil dan mengekstrak data WEEKS dan NAMA_PIHAK dari portal DERMAGA secara asinkron."""
+    cred = await get_user_credential(chat_id)
+    if not cred:
+        raise ValueError("Kredensial DERMAGA tidak ditemukan. Silakan login kembali.")
+
+    username, password = cred
+    timeout = aiohttp.ClientTimeout(total=30)
+
+    async with aiohttp.ClientSession(headers=DEFAULT_HEADERS, timeout=timeout) as session:
+        # 1. Login
+        async with session.get(LOGIN_URL) as resp:
+            soup = BeautifulSoup(await resp.text(), "html.parser")
+            csrf_token = soup.find("input", {"name": "csrf_test_name"})["value"]
+
+        payload = {"username": username, "password": password, "csrf_test_name": csrf_token}
+        async with session.post(LOGIN_URL, data=payload, allow_redirects=True) as login_resp:
+            if "mahasiswa" not in str(login_resp.url) and "Log Out" not in await login_resp.text():
+                raise PermissionError("Autentikasi ke DERMAGA gagal. Kredensial mungkin berubah.")
+
+        # 2. Ambil halaman monitoring
+        async with session.get(MONITORING_URL) as mon_resp:
+            mon_html = await mon_resp.text()
+
+    return parse_weeks_and_parties_from_html(mon_html)
+
+
+_weeks_cache: dict[int, tuple[float, dict[str, Any], dict[str, str]]] = {}
+
+
+async def get_cached_weeks_and_parties(
+    chat_id: int,
+    force_refresh: bool = False,
+) -> tuple[dict[str, Any], dict[str, str]]:
+    """
+    Mengambil data WEEKS dan NAMA_PIHAK dengan in-memory cache per-chat_id (TTL 5 menit)
+    untuk respon cepat saat navigasi kartu minggu.
+    """
+    now = time.time()
+    if not force_refresh and chat_id in _weeks_cache:
+        timestamp, cached_weeks, cached_parties = _weeks_cache[chat_id]
+        if now - timestamp < 300:  # 5 menit
+            return cached_weeks, cached_parties
+
+    weeks_data, parties = await fetch_weeks_and_parties(chat_id)
+    _weeks_cache[chat_id] = (now, weeks_data, parties)
+    return weeks_data, parties
+
 
 
 async def check_monitoring_today(chat_id: int, target_date: str) -> dict[str, Any]:

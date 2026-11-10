@@ -178,14 +178,14 @@ class TestAsyncCore(unittest.IsolatedAsyncioTestCase):
         mock_bot = AsyncMock()
         await setup_bot_commands(mock_bot)
         self.assertEqual(mock_bot.set_my_commands.await_count, 2)
-        # Check call 1: user default scope (16 commands)
+        # Check call 1: user default scope (17 commands)
         user_call = mock_bot.set_my_commands.await_args_list[0]
         user_cmds = user_call[0][0]
-        self.assertEqual(len(user_cmds), 16)
-        # Check call 2: admin chat scope (18 commands)
+        self.assertEqual(len(user_cmds), 17)
+        # Check call 2: admin chat scope (19 commands)
         admin_call = mock_bot.set_my_commands.await_args_list[1]
         admin_cmds = admin_call[0][0]
-        self.assertEqual(len(admin_cmds), 18)
+        self.assertEqual(len(admin_cmds), 19)
 
     def test_apply_gps_jitter_and_feedback(self):
         from app.services.logbook_service import apply_gps_jitter, extract_feedback_message
@@ -204,6 +204,128 @@ class TestAsyncCore(unittest.IsolatedAsyncioTestCase):
         ok_err, msg_err = extract_feedback_message(html_err)
         self.assertFalse(ok_err)
         self.assertIn("tidak valid", msg_err)
+
+    async def test_parse_weekly_cards_and_weekly_reminders(self):
+        from app.services.logbook_service import parse_weekly_cards_from_html
+        from app.database.logbook_repo import (
+            init_logbook_db,
+            get_weekly_reminder_state,
+            set_weekly_reminder_status,
+            stop_weekly_reminder,
+        )
+
+        sample_html = """
+        <div class="card minggu-card" data-awal="2026-11-02">
+            <div class="minggu-label">November-1</div>
+            <div class="text-muted">2 - 8 November 2026</div>
+            <div>5 hari terisi</div>
+            <span class="badge text-bg-warning">Menunggu verifikasi</span>
+        </div>
+        <div class="card minggu-card minggu-berjalan" data-awal="2026-11-09">
+            <div class="minggu-label">November-2</div>
+            <span class="badge text-bg-warning">Minggu ini</span>
+            <div class="text-muted">9 - 15 November 2026</div>
+            <div>1 hari terisi</div>
+            <span class="badge text-bg-secondary">Belum diajukan</span>
+        </div>
+        """
+        cards = parse_weekly_cards_from_html(sample_html)
+        self.assertEqual(len(cards), 2)
+        self.assertEqual(cards[0]["label"], "November-1")
+        self.assertEqual(cards[0]["status"], "Menunggu verifikasi")
+        self.assertEqual(cards[1]["label"], "November-2")
+        self.assertEqual(cards[1]["status"], "Belum diajukan")
+        self.assertEqual(cards[1]["hari_terisi"], 1)
+
+        # Test weekly repo state
+        await init_logbook_db()
+        test_chat_id = 991122
+        from app.database.logbook_repo import register_user_credential
+        await register_user_credential(test_chat_id, "user99", "pass123")
+        await set_weekly_reminder_status(test_chat_id, "2026-11-09", status="reminded", week_label="November-2")
+        state = await get_weekly_reminder_state(test_chat_id, "2026-11-09")
+        self.assertIsNotNone(state)
+        self.assertEqual(state["status"], "reminded")
+        self.assertEqual(state["week_label"], "November-2")
+
+        await stop_weekly_reminder(test_chat_id, "2026-11-09")
+        state_stopped = await get_weekly_reminder_state(test_chat_id, "2026-11-09")
+        self.assertEqual(state_stopped["status"], "stopped")
+
+    def test_parse_weeks_and_parties_and_link_verif(self):
+        from app.services.logbook_service import parse_weeks_and_parties_from_html
+        from app.bot.handlers.logbook import render_verification_weeks_text, render_verification_detail_text
+        from app.bot.keyboards.logbook import get_verification_weeks_keyboard, get_verification_detail_keyboard
+
+        sample_html = """
+        <script>
+        const WEEKS = {
+            "2026-10-26": {
+                "awal": "2026-10-26",
+                "label": "Oktober-4",
+                "rentang": "26 Oktober - 1 November 2026",
+                "mendatang": false,
+                "logbook": [],
+                "verif": {
+                    "mahasiswa": "3 November 2026, 07:45 WIB",
+                    "supervisor": "4 November 2026, 09:32 WIB",
+                    "dosen": "3 November 2026, 09:14 WIB",
+                    "link_supervisor": null,
+                    "link_dosen": null,
+                    "pdf": "https://jti.polinema.ac.id/dermaga/mahasiswa/monitoring/pdf/7046"
+                }
+            },
+            "2026-11-02": {
+                "awal": "2026-11-02",
+                "label": "November-1",
+                "rentang": "2 - 8 November 2026",
+                "mendatang": false,
+                "logbook": [],
+                "verif": {
+                    "mahasiswa": "10 November 2026, 09:55 WIB",
+                    "supervisor": null,
+                    "dosen": null,
+                    "link_supervisor": "https://jti.polinema.ac.id/dermaga/verifikasi/logbook/sup12345",
+                    "link_dosen": "https://jti.polinema.ac.id/dermaga/verifikasi/logbook/dos67890",
+                    "pdf": null
+                }
+            }
+        };
+        const NAMA_PIHAK = {
+            supervisor: "Pembimbing Lapangan (Tahta Alfina)",
+            dosen: "Dosen Pembimbing (Sofyan Noor Arief, S.ST., M.Kom.)"
+        };
+        </script>
+        """
+
+        weeks, parties = parse_weeks_and_parties_from_html(sample_html)
+        self.assertEqual(len(weeks), 2)
+        self.assertEqual(parties["supervisor"], "Pembimbing Lapangan (Tahta Alfina)")
+        self.assertEqual(parties["dosen"], "Dosen Pembimbing (Sofyan Noor Arief, S.ST., M.Kom.)")
+
+        nov1 = weeks["2026-11-02"]
+        self.assertEqual(nov1["verif"]["link_supervisor"], "https://jti.polinema.ac.id/dermaga/verifikasi/logbook/sup12345")
+        self.assertEqual(nov1["verif"]["link_dosen"], "https://jti.polinema.ac.id/dermaga/verifikasi/logbook/dos67890")
+
+        # Test render list
+        list_text = render_verification_weeks_text(weeks)
+        self.assertIn("November-1", list_text)
+        self.assertIn("1 Minggu Menunggu Verifikasi", list_text)
+
+        # Test render detail
+        detail_text = render_verification_detail_text(nov1, parties)
+        self.assertIn("Tahta Alfina", detail_text)
+        self.assertIn("sup12345", detail_text)
+        self.assertIn("dos67890", detail_text)
+
+        # Test keyboards
+        kb_weeks = get_verification_weeks_keyboard(weeks)
+        self.assertTrue(any("log_verif_2026-11-02" in btn.callback_data for row in kb_weeks.inline_keyboard for btn in row if btn.callback_data))
+
+        kb_detail = get_verification_detail_keyboard(nov1, parties)
+        urls = [btn.url for row in kb_detail.inline_keyboard for btn in row if btn.url]
+        self.assertIn("https://jti.polinema.ac.id/dermaga/verifikasi/logbook/sup12345", urls)
+        self.assertIn("https://jti.polinema.ac.id/dermaga/verifikasi/logbook/dos67890", urls)
 
 
 if __name__ == "__main__":

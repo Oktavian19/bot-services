@@ -140,6 +140,20 @@ async def init_logbook_db() -> None:
         await conn.execute("CREATE INDEX IF NOT EXISTS idx_drafts_chat_id ON logbook_drafts(chat_id);")
         await conn.execute("CREATE INDEX IF NOT EXISTS idx_drafts_date ON logbook_drafts(date);")
 
+        # 5. State Pengingat Mingguan (Tanda Tangan Logbook)
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS logbook_weekly_reminders (
+                chat_id INTEGER NOT NULL,
+                week_start_date TEXT NOT NULL,
+                week_label TEXT,
+                status TEXT NOT NULL,
+                last_reminded_date TEXT,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY (chat_id, week_start_date),
+                FOREIGN KEY (chat_id) REFERENCES logbook_credentials(chat_id) ON DELETE CASCADE
+            )
+        """)
+
     logger.info("[DB-LOGBOOK] Database logbook.db berhasil diverifikasi & diinisialisasi (Async).")
 
 
@@ -670,3 +684,58 @@ async def has_today_draft_or_submission(chat_id: int, date_str: str) -> bool:
             (chat_id, date_str),
         )
         return bool(await cursor.fetchone())
+
+
+# --- WEEKLY REMINDERS REPO ---
+
+async def get_weekly_reminder_state(chat_id: int, week_start_date: str) -> Optional[dict[str, Any]]:
+    """Mengambil status pengingat tanda tangan mingguan untuk minggu tertentu."""
+    settings = get_settings()
+    async with get_db_connection(settings.LOGBOOK_DB_PATH) as conn:
+        cursor = await conn.execute(
+            "SELECT * FROM logbook_weekly_reminders WHERE chat_id = ? AND week_start_date = ?",
+            (chat_id, week_start_date),
+        )
+        row = await cursor.fetchone()
+        return dict(row) if row else None
+
+
+async def set_weekly_reminder_status(
+    chat_id: int,
+    week_start_date: str,
+    status: str,
+    week_label: Optional[str] = None,
+    last_reminded_date: Optional[str] = None
+) -> None:
+    """Menyimpan atau memperbarui status pengingat mingguan."""
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    settings = get_settings()
+    async with get_db_connection(settings.LOGBOOK_DB_PATH) as conn:
+        existing = await get_weekly_reminder_state(chat_id, week_start_date)
+        if existing:
+            query = "UPDATE logbook_weekly_reminders SET status = ?, updated_at = ?"
+            params = [status, now_str]
+            if week_label:
+                query += ", week_label = ?"
+                params.append(week_label)
+            if last_reminded_date:
+                query += ", last_reminded_date = ?"
+                params.append(last_reminded_date)
+            query += " WHERE chat_id = ? AND week_start_date = ?"
+            params.extend([chat_id, week_start_date])
+            await conn.execute(query, tuple(params))
+        else:
+            await conn.execute(
+                """
+                INSERT INTO logbook_weekly_reminders 
+                (chat_id, week_start_date, week_label, status, last_reminded_date, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (chat_id, week_start_date, week_label or "", status, last_reminded_date or "", now_str),
+            )
+
+
+async def stop_weekly_reminder(chat_id: int, week_start_date: str) -> None:
+    """Menghentikan pengingat tanda tangan logbook untuk minggu tertentu."""
+    await set_weekly_reminder_status(chat_id, week_start_date, status="stopped")
+

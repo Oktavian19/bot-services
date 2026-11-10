@@ -23,6 +23,8 @@ from app.bot.keyboards.logbook import (
     get_month_calendar_keyboard,
     get_reminder_days_checklist_keyboard,
     get_settings_menu_keyboard,
+    get_verification_detail_keyboard,
+    get_verification_weeks_keyboard,
 )
 from app.core.config import get_settings
 from app.core.logger import logger
@@ -59,6 +61,7 @@ from app.services.logbook_service import (
     format_month_name,
     format_reminder_days_display,
     format_short_date,
+    get_cached_weeks_and_parties,
     group_entries_by_month,
     parse_coordinates_input,
     submit_dermaga_entry,
@@ -343,6 +346,195 @@ async def cmd_cek_logbook(event: Message | CallbackQuery) -> None:
         await loading.edit_text(text, parse_mode="HTML", reply_markup=markup)
     except Exception as err:
         await loading.edit_text(f"❌ Gagal mengambil data DERMAGA: {err}", reply_markup=get_back_to_logbook_keyboard())
+
+
+# --- LINK VERIFIKASI PEMBIMBING & DOSEN ---
+
+def render_verification_weeks_text(weeks_data: dict[str, Any]) -> str:
+    """Menyusun teks HTML pengantar daftar kartu minggu untuk pengambilan link verifikasi."""
+    pending = []
+    completed = []
+    for k, w in sorted(weeks_data.items(), reverse=True):
+        v = w.get("verif")
+        if not v:
+            continue
+        if v.get("link_supervisor") or v.get("link_dosen"):
+            pending.append(w)
+        elif v.get("pdf"):
+            completed.append(w)
+
+    text = "🔗 <b>Pusat Link Verifikasi Logbook DERMAGA</b>\n\n"
+    if pending:
+        text += (
+            f"⏳ <b>{len(pending)} Minggu Menunggu Verifikasi:</b>\n"
+            "Tautan siap dibagikan kepada Pembimbing Lapangan dan Dosen Pembimbing.\n\n"
+        )
+        for p in pending:
+            text += f"• <b>{p.get('label', 'Minggu')}</b> (<code>{p.get('rentang', '-')}</code>)\n"
+        text += "\n<i>Ketuk kartu minggu di bawah untuk mengambil dan menyalin link verifikasi:</i>"
+    elif completed:
+        text += (
+            "✅ <b>Tidak ada minggu yang sedang menunggu verifikasi saat ini.</b>\n"
+            "Semua minggu yang telah diajukan sudah selesai diverifikasi secara lengkap.\n\n"
+            "<i>Anda dapat melihat riwayat minggu sebelumnya atau mengunduh PDF di bawah ini:</i>"
+        )
+    else:
+        text += (
+            "ℹ️ <b>Belum ada logbook mingguan yang diajukan untuk verifikasi.</b>\n\n"
+            "<i>Setelah Anda menandatangani draf mingguan di portal DERMAGA, "
+            "link verifikasi untuk Supervisor dan Dosen Pembimbing akan otomatis muncul di sini.</i>"
+        )
+
+    return text
+
+
+def render_verification_detail_text(week_info: dict[str, Any], parties: dict[str, str]) -> str:
+    """Menyusun teks HTML detail link verifikasi dan status tanda tangan kartu minggu terpilih."""
+    label = week_info.get("label", "-")
+    rentang = week_info.get("rentang", "-")
+    verif = week_info.get("verif") or {}
+
+    ttd_mhs = verif.get("mahasiswa")
+    ttd_spv = verif.get("supervisor")
+    ttd_dos = verif.get("dosen")
+    link_spv = verif.get("link_supervisor")
+    link_dos = verif.get("link_dosen")
+    pdf_url = verif.get("pdf")
+
+    spv_name = parties.get("supervisor", "Pembimbing Lapangan")
+    dos_name = parties.get("dosen", "Dosen Pembimbing")
+
+    status_mhs = f"✅ Ditandatangani ({ttd_mhs})" if ttd_mhs else "⏳ Belum ditandatangani"
+    status_spv = f"✅ Ditandatangani ({ttd_spv})" if ttd_spv else "⏳ Menunggu verifikasi"
+    status_dos = f"✅ Ditandatangani ({ttd_dos})" if ttd_dos else "⏳ Menunggu verifikasi"
+
+    text = (
+        f"🔗 <b>LINK VERIFIKASI LOGBOOK DERMAGA</b>\n"
+        f"🏷 <b>Minggu:</b> <b>{label}</b> (<code>{rentang}</code>)\n\n"
+        f"📋 <b>Status Tanda Tangan:</b>\n"
+        f"• Mahasiswa: {status_mhs}\n"
+        f"• Supervisor: {status_spv}\n"
+        f"• Dosen: {status_dos}\n\n"
+    )
+
+    has_links = False
+    if link_spv:
+        has_links = True
+        text += (
+            f"👤 <b>{html.escape(spv_name)}</b>\n"
+            f"🔗 <b>Link Verifikasi:</b>\n"
+            f"<code>{link_spv}</code>\n\n"
+        )
+    elif ttd_spv:
+        text += f"👤 <b>{html.escape(spv_name)}:</b> ✅ <i>Sudah diverifikasi ({ttd_spv})</i>\n\n"
+
+    if link_dos:
+        has_links = True
+        text += (
+            f"🎓 <b>{html.escape(dos_name)}</b>\n"
+            f"🔗 <b>Link Verifikasi:</b>\n"
+            f"<code>{link_dos}</code>\n\n"
+        )
+    elif ttd_dos:
+        text += f"🎓 <b>{html.escape(dos_name)}:</b> ✅ <i>Sudah diverifikasi ({ttd_dos})</i>\n\n"
+
+    if has_links:
+        text += (
+            "💡 <i>Ketuk link di atas untuk menyalin langsung. Bagikan link ini (mis. lewat WhatsApp/email). "
+            "Penerima dapat menandatangani tanpa perlu login.</i>"
+        )
+    elif pdf_url:
+        text += (
+            f"🎉 <b>Logbook minggu ini telah selesai diverifikasi lengkap!</b>\n"
+            f"📄 Berkas PDF resmi telah diterbitkan oleh DERMAGA:\n"
+            f"<code>{pdf_url}</code>"
+        )
+    else:
+        text += (
+            "ℹ️ <i>Link verifikasi belum aktif atau belum diterbitkan. "
+            "Pastikan Anda telah menandatangani logbook mingguan di portal DERMAGA terlebih dahulu.</i>"
+        )
+
+    return text
+
+
+@router.message(Command("link_verif", "link_verifikasi"))
+@router.callback_query(F.data.in_({"log_menu_link_verif", "log_verif_refresh"}))
+async def cmd_link_verifikasi(event: Message | CallbackQuery) -> None:
+    """Menampilkan daftar kartu minggu untuk mengambil link verifikasi Supervisor & Dosen."""
+    chat_id = event.chat.id if isinstance(event, Message) else event.from_user.id
+    target_msg = event if isinstance(event, Message) else event.message
+    force_refresh = isinstance(event, CallbackQuery) and event.data == "log_verif_refresh"
+
+    if isinstance(event, CallbackQuery):
+        await event.answer("Memuat data verifikasi..." if not force_refresh else "Memperbarui data DERMAGA...")
+
+    load_text = (
+        "🔄 <i>Sedang memperbarui status verifikasi dari portal DERMAGA...</i>"
+        if force_refresh
+        else "⏳ <i>Mengambil data kartu verifikasi dari portal DERMAGA...</i>"
+    )
+    try:
+        loading = await target_msg.answer(load_text, parse_mode="HTML")
+    except Exception:
+        loading = None
+
+    try:
+        weeks_data, parties = await get_cached_weeks_and_parties(chat_id, force_refresh=force_refresh)
+        if not weeks_data:
+            err_msg = "ℹ️ Tidak ada data kartu minggu yang ditemukan di portal DERMAGA."
+            if loading:
+                await loading.edit_text(err_msg, reply_markup=get_back_to_logbook_keyboard())
+            else:
+                await target_msg.answer(err_msg, reply_markup=get_back_to_logbook_keyboard())
+            return
+
+        text = render_verification_weeks_text(weeks_data)
+        markup = get_verification_weeks_keyboard(weeks_data)
+        if loading:
+            await loading.edit_text(text, parse_mode="HTML", reply_markup=markup)
+        else:
+            await target_msg.answer(text, parse_mode="HTML", reply_markup=markup)
+    except Exception as err:
+        logger.error(f"[LOGBOOK-VERIF] Gagal memuat link verifikasi: {err}")
+        err_msg = f"❌ Gagal mengambil status verifikasi DERMAGA: {err}"
+        if loading:
+            await loading.edit_text(err_msg, reply_markup=get_back_to_logbook_keyboard())
+        else:
+            await target_msg.answer(err_msg, reply_markup=get_back_to_logbook_keyboard())
+
+
+@router.callback_query(F.data.startswith("log_verif_") & (F.data != "log_verif_refresh"))
+async def cb_verif_week_detail(callback: CallbackQuery) -> None:
+    """Menampilkan rincian link verifikasi untuk kartu minggu terpilih."""
+    await callback.answer()
+    if not callback.message:
+        return
+
+    awal = callback.data.split("log_verif_", 1)[1]
+    if awal in {"refresh", "back"}:
+        return
+
+    chat_id = callback.from_user.id
+    try:
+        weeks_data, parties = await get_cached_weeks_and_parties(chat_id, force_refresh=False)
+        week_info = weeks_data.get(awal)
+        if not week_info:
+            await callback.message.edit_text(
+                "❌ Data minggu tidak ditemukan atau sesi telah berakhir. Silakan refresh kembali.",
+                reply_markup=get_back_to_logbook_keyboard(),
+            )
+            return
+
+        text = render_verification_detail_text(week_info, parties)
+        markup = get_verification_detail_keyboard(week_info, parties)
+        await callback.message.edit_text(text, parse_mode="HTML", reply_markup=markup)
+    except Exception as err:
+        logger.error(f"[LOGBOOK-VERIF] Gagal memuat detail minggu {awal}: {err}")
+        await callback.message.edit_text(
+            f"❌ Terjadi kesalahan saat membaca data minggu: {err}",
+            reply_markup=get_back_to_logbook_keyboard(),
+        )
 
 
 # --- KALENDER & EDIT LOGBOOK ---
@@ -1408,6 +1600,27 @@ async def cb_remind_stop(callback: CallbackQuery) -> None:
             f"Anda akan diingatkan kembali besok pada jam <b>{user_time} WIB</b>.",
             parse_mode="HTML"
         )
+
+
+@router.callback_query(F.data.startswith("log_stop_week_"))
+async def cb_stop_weekly_reminder(callback: CallbackQuery) -> None:
+    """Menghentikan pengingat tanda tangan logbook untuk minggu tertentu."""
+    await callback.answer()
+    week_start = callback.data.replace("log_stop_week_", "")
+    chat_id = callback.from_user.id
+
+    from app.database.logbook_repo import get_weekly_reminder_state, stop_weekly_reminder
+    await stop_weekly_reminder(chat_id, week_start)
+    state = await get_weekly_reminder_state(chat_id, week_start)
+    week_lbl = state.get("week_label") if state and state.get("week_label") else week_start
+
+    if callback.message:
+        await callback.message.answer(
+            f"🔕 <b>Pengingat Dihentikan</b>\n\n"
+            f"Bot tidak akan mengingatkan pengajuan tanda tangan untuk <b>{week_lbl}</b> lagi.",
+            parse_mode="HTML"
+        )
+
 
 
 # --- HAPUS AKUN & ADMIN ---

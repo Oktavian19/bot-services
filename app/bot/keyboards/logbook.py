@@ -18,6 +18,9 @@ def get_logbook_hub_keyboard(is_admin_user: bool = False) -> InlineKeyboardMarku
             InlineKeyboardButton(text="📅 Kalender & Edit", callback_data="log_menu_edit"),
         ],
         [
+            InlineKeyboardButton(text="🔗 Link Verifikasi", callback_data="log_menu_link_verif"),
+        ],
+        [
             InlineKeyboardButton(text="⚙️ Pengaturan", callback_data="log_menu_settings"),
             InlineKeyboardButton(text="📍 Lokasi GPS", callback_data="log_menu_set_lokasi"),
         ],
@@ -202,5 +205,83 @@ def get_edit_detail_keyboard(any_changed: bool) -> InlineKeyboardMarkup:
         ],
     ]
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def get_verification_weeks_keyboard(weeks_data: dict[str, Any]) -> InlineKeyboardMarkup:
+    """Menyusun keyboard pilihan kartu minggu untuk melihat tautan verifikasi."""
+    rows = []
+
+    pending_weeks = []
+    completed_weeks = []
+
+    for k, w in sorted(weeks_data.items(), reverse=True):
+        verif = w.get("verif")
+        if not verif:
+            continue
+        if verif.get("link_supervisor") or verif.get("link_dosen"):
+            pending_weeks.append(w)
+        elif verif.get("pdf"):
+            completed_weeks.append(w)
+
+    # 1. Minggu yang sedang menunggu verifikasi (prioritas teratas)
+    for pw in pending_weeks:
+        label = pw.get("label", "Minggu")
+        rentang = pw.get("rentang", "")
+        short_rentang = rentang.split("-")[0].strip() if "-" in rentang else rentang
+        rows.append([
+            InlineKeyboardButton(
+                text=f"⏳ {label} ({short_rentang}) [Menunggu]",
+                callback_data=f"log_verif_{pw.get('awal')}",
+            )
+        ])
+
+    # 2. Riwayat minggu yang sudah terverifikasi (tampilkan hingga 6 minggu terbaru, 2 per baris)
+    comp_row = []
+    for cw in completed_weeks[:6]:
+        label = cw.get("label", "Minggu")
+        comp_row.append(
+            InlineKeyboardButton(
+                text=f"✅ {label}",
+                callback_data=f"log_verif_{cw.get('awal')}",
+            )
+        )
+        if len(comp_row) == 2:
+            rows.append(comp_row)
+            comp_row = []
+    if comp_row:
+        rows.append(comp_row)
+
+    # 3. Baris Aksi Navigasi
+    rows.append([
+        InlineKeyboardButton(text="🔄 Refresh Data", callback_data="log_verif_refresh"),
+        InlineKeyboardButton(text="⬅️ Kembali ke Menu Logbook", callback_data="log_menu_back"),
+    ])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def get_verification_detail_keyboard(
+    week_info: dict[str, Any],
+    parties: dict[str, str],
+) -> InlineKeyboardMarkup:
+    """Menyusun keyboard tombol buka link verifikasi eksternal dan navigasi kembali."""
+    rows = []
+    verif = week_info.get("verif") or {}
+    link_spv = verif.get("link_supervisor")
+    link_dos = verif.get("link_dosen")
+    pdf_url = verif.get("pdf")
+
+    if link_spv and str(link_spv).startswith("http"):
+        rows.append([InlineKeyboardButton(text="🌐 Buka Link Supervisor", url=str(link_spv))])
+    if link_dos and str(link_dos).startswith("http"):
+        rows.append([InlineKeyboardButton(text="🌐 Buka Link Dosen", url=str(link_dos))])
+    if pdf_url and str(pdf_url).startswith("http"):
+        rows.append([InlineKeyboardButton(text="📥 Download PDF Logbook", url=str(pdf_url))])
+
+    rows.append([
+        InlineKeyboardButton(text="⬅️ Pilih Minggu Lain", callback_data="log_menu_link_verif"),
+        InlineKeyboardButton(text="⬅️ Menu Logbook", callback_data="log_menu_back"),
+    ])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
 
 

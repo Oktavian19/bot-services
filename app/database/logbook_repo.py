@@ -625,8 +625,15 @@ async def get_or_create_reminder_state(chat_id: int, date_str: str) -> dict[str,
         return dict(await cursor_get.fetchone())
 
 
-async def update_reminder_state(chat_id: int, date_str: str, status: str, count_increment: int = 1) -> None:
-    """Memperbarui status dan jumlah counter pengingat."""
+async def update_reminder_state(
+    chat_id: int,
+    date_str: str,
+    status: str,
+    count_increment: int = 1,
+    next_retry_at: Optional[str] = None,
+    last_message_id: Optional[int] = None,
+) -> None:
+    """Memperbarui status, jumlah counter, jadwal retry berikutnya, dan ID pesan terakhir."""
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     settings = get_settings()
     async with get_db_connection(settings.LOGBOOK_DB_PATH) as conn:
@@ -635,10 +642,12 @@ async def update_reminder_state(chat_id: int, date_str: str, status: str, count_
             UPDATE logbook_reminder_state 
             SET retry_count = retry_count + ?, 
                 status = ?, 
+                next_retry_at = ?,
+                last_message_id = COALESCE(?, last_message_id),
                 updated_at = ? 
             WHERE chat_id = ? AND target_date = ?
             """,
-            (count_increment, status, now_str, chat_id, date_str),
+            (count_increment, status, next_retry_at, last_message_id, now_str, chat_id, date_str),
         )
 
 

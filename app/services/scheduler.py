@@ -63,12 +63,14 @@ async def process_logbook_reminders(bot: Bot) -> None:
             should_remind = False
             is_retry = False
 
-            if status == "idle" and current_time_str == reminder_time:
+            if status == "idle" and current_time_str >= reminder_time:
                 should_remind = True
                 is_retry = False
             elif status == "reminded":
-                # Retry evaluation
-                pass  # Sederhanakan untuk menghindari spam, atau biarkan user mengatur jam
+                next_retry_at = state.get("next_retry_at")
+                if next_retry_at and next_retry_at <= current_time_str <= "23:59":
+                    should_remind = True
+                    is_retry = True
 
             if not should_remind:
                 continue
@@ -76,7 +78,14 @@ async def process_logbook_reminders(bot: Bot) -> None:
             # Cek ke portal DERMAGA apakah sudah submit manual di web
             try:
                 entries = await fetch_dermaga_table(chat_id)
-                today_entry = next((e for e in entries if today_str in e["tanggal_text"]), None)
+                today_entry = next(
+                    (
+                        e
+                        for e in entries
+                        if e.get("tanggal_iso") == today_str or today_str in e.get("tanggal_text", "")
+                    ),
+                    None,
+                )
                 if today_entry:
                     logger.info(f"[LOGBOOK-SCHEDULER] User {chat_id} sudah mengisi logbook di web untuk {today_str}.")
                     await complete_reminder_for_today(chat_id, today_str)
@@ -85,22 +94,48 @@ async def process_logbook_reminders(bot: Bot) -> None:
                 logger.warning(f"[LOGBOOK-SCHEDULER] Lewati cek web DERMAGA user {chat_id}: {e}")
 
             # Kirim notifikasi pengingat
+            retry_count = state.get("retry_count", 0)
             keyboard = InlineKeyboardMarkup(inline_keyboard=[
                 [InlineKeyboardButton(text="✍️ Isi Logbook", callback_data=f"log_remind_fill_{today_str}")],
                 [InlineKeyboardButton(text="🔕 Berhenti Ingatkan Hari Ini", callback_data=f"log_remind_stop_{today_str}")],
             ])
 
+            retry_header = f" (Pengingat ke-{retry_count + 1})" if (is_retry or retry_count > 0) else ""
             text = (
-                f"🔔 <b>Pengingat Logbook DERMAGA</b>\n\n"
+                f"🔔 <b>Pengingat Logbook DERMAGA{retry_header}</b>\n\n"
                 f"Halo <b>{user['username']}</b>, Anda terdeteksi <b>belum mengisi logbook</b> untuk hari ini:\n"
                 f"🗓 Tanggal: <code>{today_str}</code>\n\n"
                 f"Silakan klik tombol <b>✍️ Isi Logbook</b> di bawah untuk langsung mengisinya melalui bot."
             )
+            if is_retry or retry_count > 0:
+                text += "\n\n<i>Atau pilih '🔕 Berhenti Ingatkan Hari Ini' jika Anda tidak ingin diingatkan lagi sampai besok.</i>"
 
             try:
-                await bot.send_message(chat_id=chat_id, text=text, parse_mode="HTML", reply_markup=keyboard)
-                await update_reminder_state(chat_id, today_str, status="reminded")
-                logger.info(f"[LOGBOOK-SCHEDULER] Notifikasi logbook terkirim ke User {chat_id}.")
+                sent_msg = await bot.send_message(chat_id=chat_id, text=text, parse_mode="HTML", reply_markup=keyboard)
+
+                delay_mins = random.randint(55, 60)
+                next_retry_dt = now + timedelta(minutes=delay_mins)
+                if next_retry_dt.date() == now.date() and next_retry_dt.strftime("%H:%M") <= "23:59":
+                    next_retry_str = next_retry_dt.strftime("%H:%M")
+                    logger.info(
+                        f"[LOGBOOK-SCHEDULER] Pengingat User {chat_id} terkirim (ke-{retry_count + 1}). "
+                        f"Retry berikutnya dijadwalkan pukul {next_retry_str} (jeda {delay_mins} mnt)."
+                    )
+                else:
+                    next_retry_str = None
+                    logger.info(
+                        f"[LOGBOOK-SCHEDULER] Pengingat User {chat_id} terkirim (ke-{retry_count + 1}). "
+                        f"Batas hari tercapai, tidak ada retry lagi malam ini."
+                    )
+
+                await update_reminder_state(
+                    chat_id,
+                    today_str,
+                    status="reminded",
+                    count_increment=1,
+                    next_retry_at=next_retry_str,
+                    last_message_id=sent_msg.message_id,
+                )
             except Exception as e:
                 logger.error(f"[LOGBOOK-SCHEDULER] Gagal mengirim pesan pengingat ke {chat_id}: {e}")
 

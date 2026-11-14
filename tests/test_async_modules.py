@@ -327,6 +327,100 @@ class TestAsyncCore(unittest.IsolatedAsyncioTestCase):
         self.assertIn("https://jti.polinema.ac.id/dermaga/verifikasi/logbook/sup12345", urls)
         self.assertIn("https://jti.polinema.ac.id/dermaga/verifikasi/logbook/dos67890", urls)
 
+    async def test_logbook_reminder_retry_and_web_detection(self):
+        from datetime import datetime
+        from unittest.mock import patch
+        from zoneinfo import ZoneInfo
+        from app.database.logbook_repo import (
+            get_or_create_reminder_state,
+            init_logbook_db,
+            register_user_credential,
+            stop_reminder_for_today,
+            update_user_reminder_days,
+            update_user_reminder_time,
+        )
+        from app.services.scheduler import process_logbook_reminders
+
+        await init_logbook_db()
+        chat_id = 554433
+        await register_user_credential(chat_id, "user_retry", "pass123")
+        await update_user_reminder_time(chat_id, "16:05")
+        await update_user_reminder_days(chat_id, "0,1,2,3,4,5,6")
+
+        tz = ZoneInfo("Asia/Jakarta")
+        mock_bot = MagicMock()
+        mock_sent = MagicMock()
+        mock_sent.message_id = 777
+        mock_bot.send_message = AsyncMock(return_value=mock_sent)
+
+        # 1. Pengingat pertama (terlambat 1 menit dari 16:05 -> 16:06, status masih idle)
+        t1 = datetime(2026, 11, 14, 16, 6, 0, tzinfo=tz)
+        with (
+            patch("app.services.scheduler.get_local_now", return_value=t1),
+            patch("app.services.scheduler.fetch_dermaga_table", AsyncMock(return_value=[])),
+            patch("app.services.scheduler.random.randint", return_value=57),
+        ):
+            await process_logbook_reminders(mock_bot)
+
+        self.assertEqual(mock_bot.send_message.await_count, 1)
+        state = await get_or_create_reminder_state(chat_id, "2026-11-14")
+        self.assertEqual(state["status"], "reminded")
+        self.assertEqual(state["retry_count"], 1)
+        self.assertEqual(state["next_retry_at"], "17:03")
+        self.assertEqual(state["last_message_id"], 777)
+
+        # 2. Sebelum next_retry_at (16:50) -> tidak boleh kirim ulang
+        t2 = datetime(2026, 11, 14, 16, 50, 0, tzinfo=tz)
+        with (
+            patch("app.services.scheduler.get_local_now", return_value=t2),
+            patch("app.services.scheduler.fetch_dermaga_table", AsyncMock(return_value=[])),
+        ):
+            await process_logbook_reminders(mock_bot)
+        self.assertEqual(mock_bot.send_message.await_count, 1)
+
+        # 3. Saat >= next_retry_at (17:03) -> kirim pengingat ke-2
+        t3 = datetime(2026, 11, 14, 17, 3, 0, tzinfo=tz)
+        mock_sent.message_id = 888
+        with (
+            patch("app.services.scheduler.get_local_now", return_value=t3),
+            patch("app.services.scheduler.fetch_dermaga_table", AsyncMock(return_value=[])),
+            patch("app.services.scheduler.random.randint", return_value=55),
+        ):
+            await process_logbook_reminders(mock_bot)
+
+        self.assertEqual(mock_bot.send_message.await_count, 2)
+        second_text = mock_bot.send_message.await_args_list[1].kwargs["text"]
+        self.assertIn("Pengingat ke-2", second_text)
+        state2 = await get_or_create_reminder_state(chat_id, "2026-11-14")
+        self.assertEqual(state2["retry_count"], 2)
+        self.assertEqual(state2["next_retry_at"], "17:58")
+        self.assertEqual(state2["last_message_id"], 888)
+
+        # 4. Jika user sudah mengisi di web (tanggal_iso cocok meski tanggal_text format Indonesia)
+        t4 = datetime(2026, 11, 14, 17, 58, 0, tzinfo=tz)
+        web_entries = [{"tanggal_iso": "2026-11-14", "tanggal_text": "Sabtu, 14 November 2026"}]
+        with (
+            patch("app.services.scheduler.get_local_now", return_value=t4),
+            patch("app.services.scheduler.fetch_dermaga_table", AsyncMock(return_value=web_entries)),
+        ):
+            await process_logbook_reminders(mock_bot)
+
+        self.assertEqual(mock_bot.send_message.await_count, 2)  # Tidak kirim lagi
+        state3 = await get_or_create_reminder_state(chat_id, "2026-11-14")
+        self.assertEqual(state3["status"], "completed")
+
+        # 5. Jika user menekan 'Berhenti Ingatkan Hari Ini' pada hari berikutnya
+        await register_user_credential(chat_id, "user_retry", "pass123")
+        await get_or_create_reminder_state(chat_id, "2026-11-15")
+        await stop_reminder_for_today(chat_id, "2026-11-15")
+        t5 = datetime(2026, 11, 15, 16, 10, 0, tzinfo=tz)
+        with (
+            patch("app.services.scheduler.get_local_now", return_value=t5),
+            patch("app.services.scheduler.fetch_dermaga_table", AsyncMock(return_value=[])),
+        ):
+            await process_logbook_reminders(mock_bot)
+        self.assertEqual(mock_bot.send_message.await_count, 2)
+
 
 if __name__ == "__main__":
     unittest.main()

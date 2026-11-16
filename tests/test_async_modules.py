@@ -254,7 +254,7 @@ class TestAsyncCore(unittest.IsolatedAsyncioTestCase):
 
     def test_parse_weeks_and_parties_and_link_verif(self):
         from app.services.logbook_service import parse_weeks_and_parties_from_html
-        from app.bot.handlers.logbook import render_verification_weeks_text, render_verification_detail_text
+        from app.bot.handlers.logbook_modules.views import render_verification_weeks_text, render_verification_detail_text
         from app.bot.keyboards.logbook import get_verification_weeks_keyboard, get_verification_detail_keyboard
 
         sample_html = """
@@ -424,12 +424,12 @@ class TestAsyncCore(unittest.IsolatedAsyncioTestCase):
     async def test_daftar_logbook_angle_brackets_and_html_escaping(self):
         from unittest.mock import patch
         from app.bot.handlers.admin import render_admin_users_list_text
-        from app.bot.handlers.logbook import (
+        from app.bot.handlers.logbook_modules.account import (
             _parse_daftar_logbook_args,
-            _trigger_isi_logbook,
             cmd_daftar_logbook,
             render_hub_view,
         )
+        from app.bot.handlers.logbook_modules.fill_reminder import _trigger_isi_logbook
         from app.database.logbook_repo import init_logbook_db, register_user_credential
 
         # 1. Test parser argumen
@@ -461,7 +461,10 @@ class TestAsyncCore(unittest.IsolatedAsyncioTestCase):
         mock_loading.edit_text = AsyncMock()
         mock_msg.answer = AsyncMock(return_value=mock_loading)
 
-        with patch("app.bot.handlers.logbook.test_dermaga_login", AsyncMock(return_value=(True, "OK"))) as mock_login:
+        with patch(
+            "app.bot.handlers.logbook_modules.account.test_dermaga_login",
+            AsyncMock(return_value=(True, "OK")),
+        ) as mock_login:
             await cmd_daftar_logbook(mock_msg)
 
         mock_login.assert_awaited_once_with("2341720253", "Rahasia123")
@@ -478,7 +481,10 @@ class TestAsyncCore(unittest.IsolatedAsyncioTestCase):
         mock_loading_bad.edit_text = AsyncMock()
         mock_msg_bad.answer = AsyncMock(return_value=mock_loading_bad)
 
-        with patch("app.bot.handlers.logbook.test_dermaga_login", AsyncMock(return_value=(False, "Error <tag>"))):
+        with patch(
+            "app.bot.handlers.logbook_modules.account.test_dermaga_login",
+            AsyncMock(return_value=(False, "Error <tag>")),
+        ):
             await cmd_daftar_logbook(mock_msg_bad)
 
         sent_loading = mock_msg_bad.answer.await_args_list[0].args[0]
@@ -504,6 +510,75 @@ class TestAsyncCore(unittest.IsolatedAsyncioTestCase):
         admin_text = render_admin_users_list_text([{"username": "<2341720253>", "chat_id": 1, "total_drafts": 0}])
         self.assertIn("&lt;2341720253&gt;", admin_text)
         self.assertNotIn("<2341720253>", admin_text)
+
+    async def test_logbook_shared_helpers_and_router_aggregation(self):
+        from aiogram.types import CallbackQuery, Message
+        from app.bot.handlers import logbook
+        from app.bot.handlers.logbook_modules.calendar_edit import cb_edact_cancel
+        from app.bot.handlers.logbook_modules.reminder_settings import cmd_set_jam_logbook
+        from app.bot.handlers.logbook_modules.shared import extract_override_id, normalize_time_hhmm
+        from app.database.logbook_repo import get_user_reminder_time, init_logbook_db, register_user_credential
+
+        # 1. Validasi dan normalisasi waktu
+        self.assertEqual(normalize_time_hhmm("7:5"), "07:05")
+        self.assertEqual(normalize_time_hhmm(" 16:30 "), "16:30")
+        self.assertIsNone(normalize_time_hhmm("99:99"))
+        self.assertIsNone(normalize_time_hhmm("24:00"))
+        self.assertIsNone(normalize_time_hhmm("abc"))
+
+        # 2. Ekstraksi override_id metadata draf
+        self.assertEqual(extract_override_id('{"override_id": "42"}'), "42")
+        self.assertEqual(extract_override_id([{"override_id": "99"}]), "99")
+        self.assertIsNone(extract_override_id("invalid-json"))
+        self.assertIsNone(extract_override_id(None))
+
+        # 3. Validasi /set_jam_logbook menolak 99:99 dan menerima 7:5 -> 07:05
+        await init_logbook_db()
+        chat_id = 445566
+        await register_user_credential(chat_id, "user_jam", "pass123")
+
+        bad_msg = MagicMock(spec=Message)
+        bad_msg.chat = MagicMock(id=chat_id)
+        bad_msg.text = "/set_jam_logbook 99:99"
+        bad_msg.answer = AsyncMock()
+        await cmd_set_jam_logbook(bad_msg, MagicMock())
+        self.assertIn("Format jam salah", bad_msg.answer.await_args_list[0].args[0])
+        self.assertEqual(await get_user_reminder_time(chat_id), "16:05")
+
+        ok_msg = MagicMock(spec=Message)
+        ok_msg.chat = MagicMock(id=chat_id)
+        ok_msg.text = "/set_jam_logbook 7:5"
+        ok_msg.answer = AsyncMock()
+        await cmd_set_jam_logbook(ok_msg, MagicMock())
+        self.assertIn("07:05 WIB", ok_msg.answer.await_args_list[0].args[0])
+        self.assertEqual(await get_user_reminder_time(chat_id), "07:05")
+
+        # 4. cb_edact_cancel meneruskan is_admin=True agar Admin Panel tetap tampil
+        mock_cb = MagicMock(spec=CallbackQuery)
+        mock_cb.answer = AsyncMock()
+        mock_cb.from_user = MagicMock(id=chat_id)
+        mock_cb.message = MagicMock()
+        mock_cb.message.edit_text = AsyncMock()
+        await cb_edact_cancel(mock_cb, is_admin=True)
+        markup = mock_cb.message.edit_text.await_args_list[0].kwargs["reply_markup"]
+        callbacks = [btn.callback_data for row in markup.inline_keyboard for btn in row]
+        self.assertIn("log_menu_admin_users", callbacks)
+
+        # 5. Router agregator logbook.py mencakup seluruh 8 sub-router
+        sub_names = [r.name for r in logbook.router.sub_routers]
+        self.assertEqual(
+            sub_names,
+            [
+                "logbook_account_router",
+                "logbook_web_router",
+                "logbook_calendar_nav_router",
+                "logbook_calendar_edit_router",
+                "logbook_reminder_settings_router",
+                "logbook_location_settings_router",
+                "logbook_drafts_router",
+                "logbook_fill_reminder_router",
+            ],
+        )
 
 
 if __name__ == "__main__":

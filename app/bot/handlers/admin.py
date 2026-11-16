@@ -2,6 +2,7 @@
 Router Aiogram untuk fungsi administratif bot (Admin Panel).
 """
 
+import html
 from aiogram import F, Router
 from aiogram.filters import Command
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
@@ -14,10 +15,10 @@ def render_admin_users_list_text(users: list[dict]) -> str:
     """Menyusun teks HTML ringkasan seluruh pengguna terdaftar."""
     text = f"👥 <b>Panel Admin — Daftar Pengguna Logbook ({len(users)} Akun)</b>\n\n"
     for idx, u in enumerate(users, 1):
-        username = u["username"]
+        username = html.escape(str(u["username"]))
         chat_id = u["chat_id"]
         total_drafts = u.get("total_drafts", 0)
-        last_date = u.get("last_draft_date") or "-"
+        last_date = html.escape(str(u.get("last_draft_date") or "-"))
         text += (
             f"{idx}. <b>{username}</b> (Chat ID: <code>{chat_id}</code>)\n"
             f"   Total Draf: <b>{total_drafts}</b> | Terakhir: <code>{last_date}</code>\n\n"

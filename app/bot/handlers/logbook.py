@@ -112,21 +112,22 @@ async def render_hub_view(chat_id: int, is_admin: bool = False) -> tuple[str, In
             "⚠️ Akun DERMAGA Anda belum terhubung di bot ini.\n\n"
             "Gunakan perintah:\n"
             "<code>/daftar_logbook &lt;username&gt; &lt;password&gt;</code>\n"
-            "<i>(Pesan otomatis dihapus demi keamanan).</i>"
+            "<i>Contoh:</i> <code>/daftar_logbook 2341720117 Rahasia123</code>\n"
+            "<i>(Ketik tanpa tanda &lt; &gt;. Pesan otomatis dihapus demi keamanan).</i>"
         )
         markup = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="🔑 Daftar / Login Akun", callback_data="log_menu_account")]
         ])
         return text, markup
 
-    username = user["username"]
+    username = html.escape(str(user["username"]))
     token = user.get("api_token", "-")
     short_token = f"{token[:8]}...{token[-4:]}" if token and len(token) > 12 else token
     reminder_time = user.get("reminder_time", "16:05")
     reminder_days = user.get("reminder_days", "0,1,2,3,4")
     active_prof = user.get("active_profile", "office")
     prof_info = PROFILE_DEFINITIONS.get(active_prof, {})
-    prof_name = prof_info.get("default_name", active_prof.title())
+    prof_name = html.escape(str(prof_info.get("default_name", active_prof.title())))
 
     recent_drafts = await get_recent_drafts(chat_id, limit=3)
     drafts_text = ""
@@ -134,14 +135,15 @@ async def render_hub_view(chat_id: int, is_admin: bool = False) -> tuple[str, In
         drafts_text = "\n<b>Draf Logbook Terbaru:</b>\n"
         for d in recent_drafts:
             status_icon = "⏳" if d["status"] == "draft" else "✅"
-            drafts_text += f"• {status_icon} <code>{d['date']}</code>: {d['summary'][:40]}...\n"
+            summary_short = html.escape(str(d["summary"])[:40])
+            drafts_text += f"• {status_icon} <code>{html.escape(str(d['date']))}</code>: {summary_short}...\n"
 
     text = (
         f"📖 <b>Pusat Kendali Logbook DERMAGA</b>\n\n"
         f"👤 <b>Pengguna:</b> <code>{username}</code>\n"
-        f"🔑 <b>API Token:</b> <code>{short_token}</code>\n"
-        f"⏰ <b>Jam Pengingat:</b> <b>{reminder_time} WIB</b>\n"
-        f"🗓 <b>Jadwal Pengingat:</b> <b>{format_reminder_days_display(reminder_days)}</b>\n"
+        f"🔑 <b>API Token:</b> <code>{html.escape(str(short_token))}</code>\n"
+        f"⏰ <b>Jam Pengingat:</b> <b>{html.escape(str(reminder_time))} WIB</b>\n"
+        f"🗓 <b>Jadwal Pengingat:</b> <b>{html.escape(format_reminder_days_display(reminder_days))}</b>\n"
         f"📍 <b>Profil Lokasi Aktif:</b> <b>{prof_name}</b>\n"
         f"{drafts_text}\n"
         f"Silakan pilih menu di bawah ini:"
@@ -178,6 +180,44 @@ async def cb_logbook_nav(callback: CallbackQuery, is_admin: bool = False) -> Non
 
 # --- PENDAFTARAN AKUN DERMAGA ---
 
+def _parse_daftar_logbook_args(text: str) -> Optional[tuple[str, str, Optional[str]]]:
+    """
+    Mem-parsing argumen perintah /daftar_logbook.
+    Mengembalikan (username, password, alt_password) atau None jika argumen kurang.
+    Otomatis membersihkan pembungkus <...> bila pengguna menyalin format placeholder secara harfiah.
+    """
+    parts = (text or "").strip().split(maxsplit=2)
+    if len(parts) < 3:
+        return None
+
+    raw_username = parts[1].strip()
+    raw_password = parts[2].strip()
+
+    user_wrapped = (
+        raw_username.startswith("<")
+        and raw_username.endswith(">")
+        and len(raw_username) > 2
+    )
+    username = raw_username[1:-1].strip() if user_wrapped else raw_username
+
+    password = raw_password
+    alt_password: Optional[str] = None
+    if (
+        user_wrapped
+        and raw_password.startswith("<")
+        and raw_password.endswith(">")
+        and len(raw_password) > 2
+    ):
+        # Prioritaskan isi di dalam <...>, simpan versi asli sebagai fallback jika memang bagian dari password
+        password = raw_password[1:-1]
+        alt_password = raw_password
+
+    if not username or not password:
+        return None
+
+    return username, password, alt_password
+
+
 @router.message(Command("daftar_logbook", "login_logbook", "set_dermaga_auth"))
 async def cmd_daftar_logbook(message: Message) -> None:
     """Pendaftaran kredensial DERMAGA dan penerbitan API token CLI."""
@@ -189,29 +229,36 @@ async def cmd_daftar_logbook(message: Message) -> None:
     except Exception:
         pass
 
-    parts = (message.text or "").split()
-    if len(parts) < 3:
+    parsed_args = _parse_daftar_logbook_args(message.text or "")
+    if not parsed_args:
         await message.answer(
             "❌ Format salah.\n"
             "Gunakan: <code>/daftar_logbook &lt;username&gt; &lt;password&gt;</code>\n\n"
-            "<i>Contoh:</i> <code>/daftar_logbook 2341720117 Rahasia123</code>",
+            "<i>Contoh:</i> <code>/daftar_logbook 2341720117 Rahasia123</code>\n"
+            "<i>(Ketik langsung tanpa tanda kurung &lt; &gt;)</i>",
             parse_mode="HTML"
         )
         return
 
-    username = parts[1].strip()
-    password = parts[2].strip()
+    username, password, alt_password = parsed_args
+    safe_username = html.escape(username)
 
     loading = await message.answer(
-        f"⏳ <i>Sedang menguji autentikasi akun <code>{username}</code> ke portal DERMAGA...</i>",
+        f"⏳ <i>Sedang menguji autentikasi akun <code>{safe_username}</code> ke portal DERMAGA...</i>",
         parse_mode="HTML"
     )
 
     ok, msg = await test_dermaga_login(username, password)
+    if not ok and alt_password is not None:
+        ok_alt, msg_alt = await test_dermaga_login(username, alt_password)
+        if ok_alt:
+            ok, msg, password = ok_alt, msg_alt, alt_password
+
     if not ok:
         await loading.edit_text(
-            f"❌ <b>Verifikasi DERMAGA Gagal!</b>\n\n{msg}\n\n"
-            f"Silakan periksa kembali username/NIM dan password Anda.",
+            f"❌ <b>Verifikasi DERMAGA Gagal!</b>\n\n{html.escape(str(msg))}\n\n"
+            f"Silakan periksa kembali username/NIM dan password Anda.\n"
+            f"<i>Contoh pengisian tanpa tanda &lt; &gt;:</i> <code>/daftar_logbook 2341720117 Rahasia123</code>",
             parse_mode="HTML"
         )
         return
@@ -222,15 +269,15 @@ async def cmd_daftar_logbook(message: Message) -> None:
 
         success_text = (
             f"🎉 <b>Pendaftaran Logbook DERMAGA Berhasil!</b>\n\n"
-            f"👤 Akun: <code>{username}</code>\n"
+            f"👤 Akun: <code>{safe_username}</code>\n"
             f"🔑 <b>API Token CLI Anda:</b>\n"
-            f"<code>{token}</code>\n\n"
+            f"<code>{html.escape(str(token))}</code>\n\n"
             f"📋 <b>Konfigurasi di Laptop / CLI Anda:</b>\n"
             f"Salin file <code>config.example.json</code> menjadi <code>config.json</code>, lalu sesuaikan:\n"
             f"<pre>"
             f"{{\n"
-            f'  "vps_endpoint": "{public_url}",\n'
-            f'  "api_token": "{token}",\n'
+            f'  "vps_endpoint": "{html.escape(str(public_url))}",\n'
+            f'  "api_token": "{html.escape(str(token))}",\n'
             f'  "location": "office"\n'
             f"}}"
             f"</pre>"
@@ -257,7 +304,10 @@ async def cmd_token_logbook(event: Message | CallbackQuery) -> None:
 
     user = await get_user_by_chat_id(chat_id)
     if not user:
-        warn_text = "⚠️ Akun Anda belum terdaftar. Gunakan <code>/daftar_logbook</code> terlebih dahulu."
+        warn_text = (
+            "⚠️ Akun Anda belum terdaftar. Gunakan <code>/daftar_logbook</code> terlebih dahulu.\n"
+            "<i>Contoh:</i> <code>/daftar_logbook 2341720117 Rahasia123</code>"
+        )
         if isinstance(event, CallbackQuery) and event.message:
             await event.message.edit_text(warn_text, parse_mode="HTML", reply_markup=get_back_to_logbook_keyboard())
         else:
@@ -269,13 +319,13 @@ async def cmd_token_logbook(event: Message | CallbackQuery) -> None:
 
     text = (
         f"🔑 <b>Akun & API Token CLI Logbook Anda</b>\n\n"
-        f"👤 <b>Username:</b> <code>{user['username']}</code>\n"
-        f"🔑 <b>API Token:</b>\n<code>{token}</code>\n\n"
+        f"👤 <b>Username:</b> <code>{html.escape(str(user['username']))}</code>\n"
+        f"🔑 <b>API Token:</b>\n<code>{html.escape(str(token))}</code>\n\n"
         f"📋 <b>Konfigurasi di config.json:</b>\n"
         f"<pre>"
         f"{{\n"
-        f'  "vps_endpoint": "{public_url}",\n'
-        f'  "api_token": "{token}",\n'
+        f'  "vps_endpoint": "{html.escape(str(public_url))}",\n'
+        f'  "api_token": "{html.escape(str(token))}",\n'
         f'  "location": "office"\n'
         f"}}"
         f"</pre>"
@@ -302,7 +352,7 @@ async def cb_regen_token(callback: CallbackQuery) -> None:
     if callback.message:
         if new_token:
             await callback.message.answer(
-                f"✅ <b>API Token Baru Berhasil Dibuat:</b>\n\n<code>{new_token}</code>\n\n"
+                f"✅ <b>API Token Baru Berhasil Dibuat:</b>\n\n<code>{html.escape(str(new_token))}</code>\n\n"
                 f"<i>Jangan lupa memperbarui file config.json di laptop Anda.</i>",
                 parse_mode="HTML"
             )
@@ -336,8 +386,8 @@ async def cmd_cek_logbook(event: Message | CallbackQuery) -> None:
             if len(desc) > 160:
                 desc = desc[:157] + "..."
             text += (
-                f"📅 <b>{e['tanggal_text']}</b> (ID: <code>#{e['web_id'] or '-'}</code>)\n"
-                f"⏱️ <code>{e['jam']}</code> | Ket: <b>{e['keterangan']}</b> | Status: <b>{e['status_verif']}</b>\n"
+                f"📅 <b>{html.escape(str(e['tanggal_text']))}</b> (ID: <code>#{html.escape(str(e['web_id'] or '-'))}</code>)\n"
+                f"⏱️ <code>{html.escape(str(e['jam']))}</code> | Ket: <b>{html.escape(str(e['keterangan']))}</b> | Status: <b>{html.escape(str(e['status_verif']))}</b>\n"
                 f"📝 <i>{desc}</i>\n\n"
             )
         if len(entries) > 10:
@@ -643,7 +693,7 @@ async def cb_menu_edit(callback: CallbackQuery) -> None:
         if not entries:
             if callback.message:
                 await callback.message.edit_text(
-                    f"ℹ️ Belum ada entri logbook yang tercatat di akun DERMAGA <code>{user['username']}</code> untuk diedit.",
+                    f"ℹ️ Belum ada entri logbook yang tercatat di akun DERMAGA <code>{html.escape(str(user['username']))}</code> untuk diedit.",
                     parse_mode="HTML",
                     reply_markup=get_back_to_logbook_keyboard()
                 )
@@ -949,7 +999,7 @@ async def cb_edact_confirmsave(callback: CallbackQuery) -> None:
             f"📝 Data di portal DERMAGA telah terverifikasi berhasil diperbarui."
         )
     else:
-        balasan = f"❌ <b>Gagal Memperbarui Logbook:</b>\n{msg}"
+        balasan = f"❌ <b>Gagal Memperbarui Logbook:</b>\n{html.escape(str(msg))}"
 
     if callback.message:
         await callback.message.answer(balasan, parse_mode="HTML", reply_markup=get_back_to_logbook_keyboard())
@@ -1335,7 +1385,7 @@ async def cb_confirm_draft(callback: CallbackQuery) -> None:
             f"✅ Absensi dan entri logbook telah tercatat aman di sistem kampus."
         )
     else:
-        balasan = f"❌ <b>Gagal submit ke DERMAGA:</b>\n{msg}"
+        balasan = f"❌ <b>Gagal submit ke DERMAGA:</b>\n{html.escape(str(msg))}"
 
     if callback.message:
         await callback.message.answer(balasan, parse_mode="HTML", reply_markup=get_back_to_logbook_keyboard())
@@ -1416,7 +1466,9 @@ async def _trigger_isi_logbook(chat_id: int, target_message: Message, state: FSM
             "⚠️ <b>Akun Belum Terdaftar!</b>\n\n"
             "Anda belum menghubungkan akun DERMAGA ke bot ini.\n"
             "Gunakan perintah:\n"
-            "<code>/daftar_logbook <username> <password></code>",
+            "<code>/daftar_logbook &lt;username&gt; &lt;password&gt;</code>\n"
+            "<i>Contoh:</i> <code>/daftar_logbook 2341720117 Rahasia123</code>\n"
+            "<i>(Ketik tanpa tanda &lt; &gt;)</i>",
             parse_mode="HTML"
         )
         return
@@ -1456,8 +1508,8 @@ async def _trigger_isi_logbook(chat_id: int, target_message: Message, state: FSM
         teks_konfirmasi = (
             f"⚠️ <b>Logbook Hari Ini Sudah Terisi!</b>\n\n"
             f"Entri tanggal <code>{today_str}</code> sudah tercatat di sistem DERMAGA.\n\n"
-            f"🆔 <b>ID Entri:</b> <code>#{web_id}</code>\n"
-            f"⏱ <b>Jam Kerja:</b> <code>{masuk} - {pulang} WIB</code>\n"
+            f"🆔 <b>ID Entri:</b> <code>#{html.escape(str(web_id))}</code>\n"
+            f"⏱ <b>Jam Kerja:</b> <code>{html.escape(str(masuk))} - {html.escape(str(pulang))} WIB</code>\n"
             f"📋 <b>Aktivitas Saat Ini:</b>\n"
             f"<blockquote>{deskripsi}</blockquote>\n\n"
             f"Apakah Anda ingin mengedit / memperbarui logbook hari ini?"
@@ -1515,7 +1567,7 @@ async def cb_isi_edit_today(callback: CallbackQuery, state: FSMContext) -> None:
     )
     prompt_text = (
         f"✏️ <b>Edit Logbook Hari Ini (<code>{today_str}</code>)</b>\n"
-        f"🆔 ID Entri: <code>#{web_id}</code>\n\n"
+        f"🆔 ID Entri: <code>#{html.escape(str(web_id))}</code>\n\n"
         f"Silakan ketikkan deskripsi pekerjaan / aktivitas baru untuk menimpa entri lama:\n"
         f"<i>(Ketik pesan biasa di chat ini atau klik Batal)</i>"
     )
@@ -1617,7 +1669,7 @@ async def cb_stop_weekly_reminder(callback: CallbackQuery) -> None:
     if callback.message:
         await callback.message.answer(
             f"🔕 <b>Pengingat Dihentikan</b>\n\n"
-            f"Bot tidak akan mengingatkan pengajuan tanda tangan untuk <b>{week_lbl}</b> lagi.",
+            f"Bot tidak akan mengingatkan pengajuan tanda tangan untuk <b>{html.escape(str(week_lbl))}</b> lagi.",
             parse_mode="HTML"
         )
 

@@ -421,6 +421,90 @@ class TestAsyncCore(unittest.IsolatedAsyncioTestCase):
             await process_logbook_reminders(mock_bot)
         self.assertEqual(mock_bot.send_message.await_count, 2)
 
+    async def test_daftar_logbook_angle_brackets_and_html_escaping(self):
+        from unittest.mock import patch
+        from app.bot.handlers.admin import render_admin_users_list_text
+        from app.bot.handlers.logbook import (
+            _parse_daftar_logbook_args,
+            _trigger_isi_logbook,
+            cmd_daftar_logbook,
+            render_hub_view,
+        )
+        from app.database.logbook_repo import init_logbook_db, register_user_credential
+
+        # 1. Test parser argumen
+        self.assertEqual(
+            _parse_daftar_logbook_args("/daftar_logbook 2341720253 Rahasia123"),
+            ("2341720253", "Rahasia123", None),
+        )
+        self.assertEqual(
+            _parse_daftar_logbook_args("/daftar_logbook <2341720253> <Rahasia123>"),
+            ("2341720253", "Rahasia123", "<Rahasia123>"),
+        )
+        self.assertEqual(
+            _parse_daftar_logbook_args("/daftar_logbook <2341720253> Rahasia123"),
+            ("2341720253", "Rahasia123", None),
+        )
+        self.assertEqual(
+            _parse_daftar_logbook_args("/daftar_logbook 2341720253 <Rahasia123>"),
+            ("2341720253", "<Rahasia123>", None),
+        )
+        self.assertIsNone(_parse_daftar_logbook_args("/daftar_logbook 2341720253"))
+
+        # 2. Test cmd_daftar_logbook saat user mengetik <2341720253> <Rahasia123>
+        await init_logbook_db()
+        mock_msg = MagicMock()
+        mock_msg.chat.id = 6627879825
+        mock_msg.text = "/daftar_logbook <2341720253> <Rahasia123>"
+        mock_msg.delete = AsyncMock()
+        mock_loading = MagicMock()
+        mock_loading.edit_text = AsyncMock()
+        mock_msg.answer = AsyncMock(return_value=mock_loading)
+
+        with patch("app.bot.handlers.logbook.test_dermaga_login", AsyncMock(return_value=(True, "OK"))) as mock_login:
+            await cmd_daftar_logbook(mock_msg)
+
+        mock_login.assert_awaited_once_with("2341720253", "Rahasia123")
+        loading_text = mock_msg.answer.await_args_list[0].args[0]
+        self.assertIn("<code>2341720253</code>", loading_text)
+        self.assertNotIn("<2341720253>", loading_text)
+
+        # 3. Test cmd_daftar_logbook jika username mengandung karakter HTML tidak valid (<badtag)
+        mock_msg_bad = MagicMock()
+        mock_msg_bad.chat.id = 6627879826
+        mock_msg_bad.text = "/daftar_logbook <2341720253 rahasia"
+        mock_msg_bad.delete = AsyncMock()
+        mock_loading_bad = MagicMock()
+        mock_loading_bad.edit_text = AsyncMock()
+        mock_msg_bad.answer = AsyncMock(return_value=mock_loading_bad)
+
+        with patch("app.bot.handlers.logbook.test_dermaga_login", AsyncMock(return_value=(False, "Error <tag>"))):
+            await cmd_daftar_logbook(mock_msg_bad)
+
+        sent_loading = mock_msg_bad.answer.await_args_list[0].args[0]
+        self.assertIn("&lt;2341720253", sent_loading)
+        self.assertNotIn("<2341720253", sent_loading)
+        edited_err = mock_loading_bad.edit_text.await_args_list[0].args[0]
+        self.assertIn("Error &lt;tag&gt;", edited_err)
+
+        # 4. Test _trigger_isi_logbook saat akun belum terdaftar (memastikan <username> di-escape)
+        unreg_msg = MagicMock()
+        unreg_msg.answer = AsyncMock()
+        await _trigger_isi_logbook(999999999, unreg_msg, MagicMock())
+        unreg_text = unreg_msg.answer.await_args_list[0].args[0]
+        self.assertIn("&lt;username&gt; &lt;password&gt;", unreg_text)
+        self.assertNotIn("<username>", unreg_text)
+
+        # 5. Test render_hub_view & render_admin_users_list_text escape username
+        await register_user_credential(776655, "<script>", "pw")
+        hub_text, _ = await render_hub_view(776655)
+        self.assertIn("&lt;script&gt;", hub_text)
+        self.assertNotIn("<script>", hub_text)
+
+        admin_text = render_admin_users_list_text([{"username": "<2341720253>", "chat_id": 1, "total_drafts": 0}])
+        self.assertIn("&lt;2341720253&gt;", admin_text)
+        self.assertNotIn("<2341720253>", admin_text)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -5,6 +5,7 @@ Mengelola eksekusi rutin pengingat agenda, pengingat harian logbook, dan monitor
 
 import asyncio
 from datetime import datetime, timedelta
+import html
 import random
 from typing import Optional
 from aiogram import Bot
@@ -103,7 +104,7 @@ async def process_logbook_reminders(bot: Bot) -> None:
             retry_header = f" (Pengingat ke-{retry_count + 1})" if (is_retry or retry_count > 0) else ""
             text = (
                 f"🔔 <b>Pengingat Logbook DERMAGA{retry_header}</b>\n\n"
-                f"Halo <b>{user['username']}</b>, Anda terdeteksi <b>belum mengisi logbook</b> untuk hari ini:\n"
+                f"Halo <b>{html.escape(str(user['username']))}</b>, Anda terdeteksi <b>belum mengisi logbook</b> untuk hari ini:\n"
                 f"🗓 Tanggal: <code>{today_str}</code>\n\n"
                 f"Silakan klik tombol <b>✍️ Isi Logbook</b> di bawah untuk langsung mengisinya melalui bot."
             )
@@ -200,7 +201,9 @@ async def process_weekly_signature_reminders(bot: Bot) -> None:
                 lines = []
                 stop_buttons = []
                 for c in unsubmitted_cards:
-                    lines.append(f"• <b>{c['label']}</b> (<code>{c['rentang_tanggal']}</code>) — <i>{c['hari_terisi']} hari terisi</i>")
+                    lbl_esc = html.escape(str(c["label"]))
+                    rng_esc = html.escape(str(c["rentang_tanggal"]))
+                    lines.append(f"• <b>{lbl_esc}</b> (<code>{rng_esc}</code>) — <i>{c['hari_terisi']} hari terisi</i>")
                     stop_buttons.append([
                         InlineKeyboardButton(
                             text=f"🔕 Berhenti Ingatkan {c['label']}",
@@ -210,7 +213,7 @@ async def process_weekly_signature_reminders(bot: Bot) -> None:
 
                 text = (
                     "⚠️ <b>Pengingat Tanda Tangan Logbook Mingguan</b>\n\n"
-                    f"Halo <b>{user['username']}</b>, terdeteksi terdapat logbook mingguan yang <b>belum diajukan / ditandatangani</b>:\n\n"
+                    f"Halo <b>{html.escape(str(user['username']))}</b>, terdeteksi terdapat logbook mingguan yang <b>belum diajukan / ditandatangani</b>:\n\n"
                     + "\n".join(lines) + "\n\n"
                     "Mohon segera buka portal DERMAGA untuk menandatangani dan mengajukan logbook tersebut ke Dosen & Supervisor:\n"
                     "🔗 <a href='https://jti.polinema.ac.id/dermaga/mahasiswa/monitoring'>Buka Monitoring DERMAGA</a>"

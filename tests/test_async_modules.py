@@ -182,10 +182,10 @@ class TestAsyncCore(unittest.IsolatedAsyncioTestCase):
         user_call = mock_bot.set_my_commands.await_args_list[0]
         user_cmds = user_call[0][0]
         self.assertEqual(len(user_cmds), 17)
-        # Check call 2: admin chat scope (19 commands)
+        # Check call 2: admin chat scope (20 commands)
         admin_call = mock_bot.set_my_commands.await_args_list[1]
         admin_cmds = admin_call[0][0]
-        self.assertEqual(len(admin_cmds), 19)
+        self.assertEqual(len(admin_cmds), 20)
 
     def test_apply_gps_jitter_and_feedback(self):
         from app.services.logbook_service import apply_gps_jitter, extract_feedback_message
@@ -630,6 +630,117 @@ class TestAsyncCore(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(draft["selected_profile"], "home")
         fetched = await get_draft(draft["id"])
         self.assertEqual(fetched["selected_profile"], "home")
+
+    async def test_auth_middleware_and_sqlite_backup(self):
+        from datetime import datetime
+        import sqlite3
+        import zipfile
+        from aiogram import Bot, Dispatcher, Router
+        from aiogram.types import CallbackQuery, Chat, Message, Update, User
+        from app.bot.handlers.admin import cmd_backup_db
+        from app.bot.middlewares.auth import AuthMiddleware
+        from app.bot.middlewares.logging import LoggingMiddleware
+        from app.database import reminder_repo
+        from app.services.backup_service import create_sqlite_backup_archive, run_scheduled_backup
+        from app.services.scheduler import setup_scheduler
+
+        # 1. AuthMiddleware + LoggingMiddleware mengenali admin (999888777) & non-admin pada dp.update
+        dp = Dispatcher()
+        dp.update.outer_middleware(LoggingMiddleware())
+        dp.update.middleware(AuthMiddleware())
+        r = Router()
+        observed = []
+
+        @r.message()
+        async def handle_msg(msg: Message, is_admin: bool = False):
+            observed.append(("msg", msg.from_user.id, is_admin))
+
+        @r.callback_query()
+        async def handle_cb(cb: CallbackQuery, is_admin: bool = False):
+            observed.append(("cb", cb.from_user.id, is_admin))
+
+        dp.include_router(r)
+        dummy_bot = Bot("123456:FAKE_TOKEN_FOR_TESTING")
+        try:
+            admin_msg = Update(
+                update_id=1,
+                message=Message(
+                    message_id=1,
+                    date=datetime.now(),
+                    chat=Chat(id=999888777, type="private"),
+                    from_user=User(id=999888777, is_bot=False, first_name="Admin"),
+                    text="/backup",
+                ),
+            )
+            user_cb = Update(
+                update_id=2,
+                callback_query=CallbackQuery(
+                    id="cb1",
+                    from_user=User(id=111222333, is_bot=False, first_name="User"),
+                    chat_instance="x",
+                    data="cb_speedtest",
+                ),
+            )
+            await dp.feed_update(dummy_bot, admin_msg)
+            await dp.feed_update(dummy_bot, user_cb)
+        finally:
+            await dummy_bot.session.close()
+
+        self.assertEqual(observed, [("msg", 999888777, True), ("cb", 111222333, False)])
+
+        # 2. WAL-safe SQLite Online Backup & manifest integrity check
+        await reminder_repo.init_reminder_db()
+        await reminder_repo.insert_reminder(999888777, "Backup Test", "2026-12-31", "08:00", 1)
+        await fuel_repo.init_fuel_db()
+        await logbook_repo.init_logbook_db()
+
+        with tempfile.TemporaryDirectory() as out_dir:
+            zip_path, stats = create_sqlite_backup_archive(Path(out_dir))
+            self.assertTrue(zip_path.exists())
+            self.assertEqual(len(stats), 3)
+            self.assertTrue(all(s["integrity"] == "OK" for s in stats))
+
+            with zipfile.ZipFile(zip_path, "r") as zf:
+                names = set(zf.namelist())
+                self.assertIn("reminders_test.db", names)
+                self.assertIn("bensin_test.db", names)
+                self.assertIn("logbook_test.db", names)
+                self.assertIn("manifest.txt", names)
+
+                # Verifikasi data di dalam snapshot ter-restore utuh tanpa WAL
+                from contextlib import closing
+                zf.extract("reminders_test.db", path=out_dir)
+                with closing(sqlite3.connect(str(Path(out_dir) / "reminders_test.db"))) as restored:
+                    rows = restored.execute("SELECT message FROM reminders").fetchall()
+                    self.assertEqual([row[0] for row in rows], ["Backup Test"])
+
+        # 3. Command /backup menolak non-admin dan mengirim dokumen ke admin
+        mock_bot = MagicMock()
+        mock_bot.send_document = AsyncMock()
+        non_admin_msg = MagicMock(spec=Message)
+        non_admin_msg.answer = AsyncMock()
+        await cmd_backup_db(non_admin_msg, is_admin=False)
+        self.assertIn("Akses ditolak", non_admin_msg.answer.await_args_list[0].args[0])
+        mock_bot.send_document.assert_not_awaited()
+
+        loading_msg = MagicMock()
+        loading_msg.delete = AsyncMock()
+        admin_cmd_msg = MagicMock(spec=Message)
+        admin_cmd_msg.bot = mock_bot
+        admin_cmd_msg.chat = MagicMock(id=999888777)
+        admin_cmd_msg.answer = AsyncMock(return_value=loading_msg)
+        await cmd_backup_db(admin_cmd_msg, is_admin=True)
+        self.assertEqual(mock_bot.send_document.await_count, 1)
+        self.assertIn("Manual (/backup)", mock_bot.send_document.await_args.kwargs["caption"])
+
+        # 4. Scheduled backup & job registration di APScheduler
+        await run_scheduled_backup(mock_bot)
+        self.assertEqual(mock_bot.send_document.await_count, 2)
+        self.assertIn("Terjadwal (Harian)", mock_bot.send_document.await_args.kwargs["caption"])
+
+        sched = setup_scheduler(mock_bot)
+        job_ids = {j.id for j in sched.get_jobs()}
+        self.assertIn("daily_sqlite_backup_job", job_ids)
 
 
 if __name__ == "__main__":

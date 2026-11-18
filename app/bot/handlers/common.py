@@ -65,6 +65,7 @@ async def cmd_help(message: Message, is_admin: bool = False) -> None:
             "\n🛠 <b>Administrator:</b>\n"
             "• /speedtest — Ukur kecepatan internet server (Ookla)\n"
             "• /admin_logbook — Panel daftar seluruh pengguna logbook\n"
+            "• /backup — Backup seluruh database SQLite ke Telegram\n"
         )
 
     await message.answer(help_text, parse_mode="HTML")

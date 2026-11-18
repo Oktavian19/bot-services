@@ -23,6 +23,7 @@ from app.database.logbook_repo import (
     set_weekly_reminder_status,
     update_reminder_state,
 )
+from app.services.backup_service import run_scheduled_backup
 from app.services.logbook_service import fetch_dermaga_table, fetch_weekly_logbook_cards
 from app.services.network_service import network_monitor_task
 from app.services.reminder_service import get_local_now, process_due_reminders
@@ -278,6 +279,18 @@ def setup_scheduler(bot: Bot) -> AsyncIOScheduler:
         second=0,
         args=[bot],
         id="weekly_signature_job",
+        replace_existing=True,
+    )
+
+    # 4. Job auto-backup database SQLite setiap hari pukul 03:00 WIB
+    scheduler.add_job(
+        run_scheduled_backup,
+        trigger="cron",
+        hour=3,
+        minute=0,
+        second=0,
+        args=[bot],
+        id="daily_sqlite_backup_job",
         replace_existing=True,
     )
 

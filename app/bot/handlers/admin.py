@@ -7,6 +7,7 @@ from aiogram import F, Router
 from aiogram.filters import Command
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 from app.database.logbook_repo import get_all_users
+from app.services.backup_service import send_sqlite_backup_to_telegram
 
 router = Router(name="admin_router")
 
@@ -49,4 +50,25 @@ async def cmd_admin_logbook(event: Message | CallbackQuery, is_admin: bool = Fal
 
     text = render_admin_users_list_text(users)
     await target_msg.answer(text, parse_mode="HTML", reply_markup=markup)
+
+
+@router.message(Command("backup"))
+async def cmd_backup_db(message: Message, is_admin: bool = False) -> None:
+    """Membuat backup arsip ZIP seluruh database SQLite dan mengirimkannya (Admin only)."""
+    if not is_admin:
+        await message.answer("⛔ Akses ditolak. Hanya untuk Administrator.")
+        return
+
+    loading = await message.answer(
+        "⏳ <i>Sedang membuat snapshot WAL-safe seluruh database SQLite...</i>",
+        parse_mode="HTML",
+    )
+    ok, msg = await send_sqlite_backup_to_telegram(message.bot, message.chat.id, scheduled=False)
+    if ok:
+        try:
+            await loading.delete()
+        except Exception:
+            pass
+    else:
+        await loading.edit_text(f"❌ {html.escape(msg)}", parse_mode="HTML")
 

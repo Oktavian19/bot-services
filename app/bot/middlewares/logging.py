@@ -5,7 +5,7 @@ Middleware logging untuk merekam setiap pesan dan callback query yang masuk mela
 import time
 from typing import Any, Awaitable, Callable, Dict
 from aiogram import BaseMiddleware
-from aiogram.types import CallbackQuery, Message, TelegramObject
+from aiogram.types import CallbackQuery, Message, TelegramObject, Update
 from app.core.logger import logger
 
 
@@ -17,16 +17,17 @@ class LoggingMiddleware(BaseMiddleware):
         data: Dict[str, Any]
     ) -> Any:
         start_time = time.perf_counter()
+        target = event.event if isinstance(event, Update) else event
 
         user_id = "unknown"
-        event_desc = "unknown"
+        event_desc = type(target).__name__
 
-        if isinstance(event, Message):
-            user_id = str(event.from_user.id if event.from_user else event.chat.id)
-            event_desc = f"Message: {event.text or event.content_type}"
-        elif isinstance(event, CallbackQuery):
-            user_id = str(event.from_user.id)
-            event_desc = f"Callback: {event.data}"
+        if isinstance(target, Message):
+            user_id = str(target.from_user.id if target.from_user else target.chat.id)
+            event_desc = f"Message: {target.text or target.content_type}"
+        elif isinstance(target, CallbackQuery):
+            user_id = str(target.from_user.id)
+            event_desc = f"Callback: {target.data}"
 
         logger.debug(f"[UPDATE-IN] User {user_id} -> {event_desc}")
 

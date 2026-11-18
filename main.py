@@ -66,6 +66,7 @@ async def setup_bot_commands(bot: Bot) -> None:
         admin_commands = user_commands + [
             BotCommand(command="speedtest", description="Ukur kecepatan internet server"),
             BotCommand(command="admin_logbook", description="Panel admin pengguna logbook"),
+            BotCommand(command="backup", description="Backup database SQLite ke Telegram"),
         ]
         try:
             await bot.set_my_commands(admin_commands, scope=BotCommandScopeChat(chat_id=settings.ADMIN_CHAT_ID))

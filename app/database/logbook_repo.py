@@ -410,6 +410,14 @@ async def update_user_location(chat_id: int, lat: str, lng: str, accuracy: str =
 
 # --- DRAFTS REPO ---
 
+def _row_to_draft_dict(row: Any) -> dict[str, Any]:
+    """Mengonversi baris SQLite logbook_drafts menjadi dict dengan alias kompatibel."""
+    d = dict(row)
+    d["summary"] = d.get("commits_summary", "")
+    d["selected_profile"] = d.get("location_profile") or "office"
+    return d
+
+
 async def create_or_get_draft(
     chat_id: int,
     idempotency_key: str,
@@ -429,9 +437,7 @@ async def create_or_get_draft(
         )
         existing = await cursor.fetchone()
         if existing:
-            d = dict(existing)
-            d["summary"] = d.get("commits_summary", "")
-            return d, False
+            return _row_to_draft_dict(existing), False
 
         proj_json = json.dumps(projects, ensure_ascii=False)
         raw_json = json.dumps(raw_metadata or [], ensure_ascii=False)
@@ -463,9 +469,7 @@ async def create_or_get_draft(
         cursor_get = await conn.execute(
             "SELECT * FROM logbook_drafts WHERE id = ?", (draft_id,)
         )
-        new_row = dict(await cursor_get.fetchone())
-        new_row["summary"] = new_row.get("commits_summary", "")
-        return new_row, True
+        return _row_to_draft_dict(await cursor_get.fetchone()), True
 
 
 async def get_draft(draft_id: int) -> Optional[dict[str, Any]]:
@@ -474,11 +478,7 @@ async def get_draft(draft_id: int) -> Optional[dict[str, Any]]:
     async with get_db_connection(settings.LOGBOOK_DB_PATH) as conn:
         cursor = await conn.execute("SELECT * FROM logbook_drafts WHERE id = ?", (draft_id,))
         row = await cursor.fetchone()
-        if not row:
-            return None
-        d = dict(row)
-        d["summary"] = d.get("commits_summary", "")
-        return d
+        return _row_to_draft_dict(row) if row else None
 
 
 async def update_draft_status(draft_id: int, status: str) -> bool:
@@ -542,12 +542,7 @@ async def get_recent_drafts(chat_id: int, limit: int = 5) -> List[dict[str, Any]
             (chat_id, limit),
         )
         rows = await cursor.fetchall()
-        result = []
-        for r in rows:
-            d = dict(r)
-            d["summary"] = d.get("commits_summary", "")
-            result.append(d)
-        return result
+        return [_row_to_draft_dict(r) for r in rows]
 
 
 # --- REMINDERS REPO ---

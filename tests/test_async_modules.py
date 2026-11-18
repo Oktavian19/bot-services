@@ -580,6 +580,57 @@ class TestAsyncCore(unittest.IsolatedAsyncioTestCase):
             ],
         )
 
+    async def test_location_settings_and_profile_keys(self):
+        from aiogram.types import CallbackQuery
+        from app.bot.handlers.logbook_modules.account import render_hub_view
+        from app.bot.handlers.logbook_modules.location_settings import cb_switch_location_profile, cmd_set_lokasi
+        from app.database.logbook_repo import (
+            create_or_get_draft,
+            get_active_location_profile,
+            get_draft,
+            init_logbook_db,
+            register_user_credential,
+        )
+
+        await init_logbook_db()
+        chat_id = 334455
+        await register_user_credential(chat_id, "user_loc", "pass123")
+
+        # 1. cmd_set_lokasi tidak error (KeyError: 'latitude') dan menampilkan office vs Belum diatur
+        cb_loc = MagicMock(spec=CallbackQuery)
+        cb_loc.answer = AsyncMock()
+        cb_loc.from_user = MagicMock(id=chat_id)
+        cb_loc.message = MagicMock()
+        cb_loc.message.answer = AsyncMock()
+        await cmd_set_lokasi(cb_loc)
+
+        loc_text = cb_loc.message.answer.await_args_list[0].args[0]
+        self.assertIn("-7.5815, 112.6247", loc_text)
+        self.assertIn("(±15m)", loc_text)
+        self.assertIn("Belum diatur", loc_text)
+        self.assertNotIn("None, None", loc_text)
+
+        # 2. Switch profil aktif ke 'home' memperbarui teks [AKTIF], render_hub_view, dan draft selected_profile
+        cb_switch = MagicMock(spec=CallbackQuery)
+        cb_switch.answer = AsyncMock()
+        cb_switch.from_user = MagicMock(id=chat_id)
+        cb_switch.data = "log_loc_switch_home"
+        cb_switch.message = MagicMock()
+        cb_switch.message.edit_text = AsyncMock()
+        await cb_switch_location_profile(cb_switch)
+
+        self.assertEqual(await get_active_location_profile(chat_id), "home")
+        switched_text = cb_switch.message.edit_text.await_args_list[0].args[0]
+        self.assertIn("Rumah / Kos (WFH)</b> <b>[AKTIF]</b>", switched_text)
+
+        hub_text, _ = await render_hub_view(chat_id)
+        self.assertIn("Rumah / Kos (WFH)", hub_text)
+
+        draft, _ = await create_or_get_draft(chat_id, "k_loc_1", "2026-11-18", ["P1"], "Kerja dari rumah")
+        self.assertEqual(draft["selected_profile"], "home")
+        fetched = await get_draft(draft["id"])
+        self.assertEqual(fetched["selected_profile"], "home")
+
 
 if __name__ == "__main__":
     unittest.main()

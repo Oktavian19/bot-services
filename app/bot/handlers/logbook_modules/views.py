@@ -64,7 +64,7 @@ def build_hub_text(user: dict[str, Any], recent_drafts: list[dict[str, Any]]) ->
     short_token = f"{token[:8]}...{token[-4:]}" if token and len(token) > 12 else token
     reminder_time = user.get("reminder_time", "16:05")
     reminder_days = user.get("reminder_days", "0,1,2,3,4")
-    active_prof = user.get("active_profile", "office")
+    active_prof = user.get("active_location_profile") or user.get("active_profile") or "office"
     prof_info = PROFILE_DEFINITIONS.get(active_prof, {})
     prof_name = html.escape(str(prof_info.get("default_name", active_prof.title())))
 

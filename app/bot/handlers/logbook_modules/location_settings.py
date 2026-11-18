@@ -6,7 +6,7 @@ import html
 from aiogram import F, Router
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
-from aiogram.types import CallbackQuery, Message
+from aiogram.types import CallbackQuery, InlineKeyboardMarkup, Message
 from app.bot.handlers.logbook_modules.shared import LogbookSetLocFSM, unpack_event
 from app.bot.keyboards.logbook import get_back_to_logbook_keyboard, get_locations_menu_keyboard
 from app.database.logbook_repo import (
@@ -21,14 +21,8 @@ from app.services.logbook_service import parse_coordinates_input
 router = Router(name="logbook_location_settings_router")
 
 
-@router.message(Command("set_lokasi_logbook", "lokasi_logbook", "set_gps_logbook"))
-@router.callback_query(F.data == "log_menu_set_lokasi")
-async def cmd_set_lokasi(event: Message | CallbackQuery) -> None:
-    """Menampilkan menu profil lokasi GPS magang."""
-    chat_id, target_msg = await unpack_event(event)
-    if not target_msg:
-        return
-
+async def _build_locations_view(chat_id: int) -> tuple[str, InlineKeyboardMarkup]:
+    """Menyusun teks HTML dan keyboard profil lokasi GPS magang."""
     profiles = await get_user_location_profiles(chat_id)
     active_profile = await get_active_location_profile(chat_id)
 
@@ -39,13 +33,34 @@ async def cmd_set_lokasi(event: Message | CallbackQuery) -> None:
         icon = p_def.get("icon", "📍")
         label = html.escape(str(p_def.get("label", p_key.title())))
         status_tag = " <b>[AKTIF]</b>" if p_key == active_profile else ""
-        maps_url = f"https://www.google.com/maps?q={p['latitude']},{p['longitude']}"
-        text += (
-            f"{icon} <b>{label}</b>{status_tag}\n"
-            f"   Koordinat: <a href=\"{maps_url}\"><code>{p['latitude']}, {p['longitude']}</code></a> (±{p['accuracy']}m)\n\n"
-        )
+        lat, lng = p.get("lat"), p.get("lng")
+        acc = p.get("akurasi", "15")
+
+        if lat and lng:
+            maps_url = f"https://www.google.com/maps?q={lat},{lng}"
+            coord_line = (
+                f'   Koordinat: <a href="{maps_url}"><code>{html.escape(str(lat))}, {html.escape(str(lng))}</code></a>'
+                f" (±{html.escape(str(acc))}m)\n\n"
+            )
+        else:
+            coord_line = "   Koordinat: <i>Belum diatur</i>\n\n"
+
+        text += f"{icon} <b>{label}</b>{status_tag}\n{coord_line}"
+
     text += "Klik tombol di bawah untuk berganti profil aktif atau mengatur koordinat baru:"
-    await target_msg.answer(text, parse_mode="HTML", reply_markup=get_locations_menu_keyboard(profiles, active_profile))
+    return text, get_locations_menu_keyboard(profiles, active_profile)
+
+
+@router.message(Command("set_lokasi_logbook", "lokasi_logbook", "set_gps_logbook"))
+@router.callback_query(F.data == "log_menu_set_lokasi")
+async def cmd_set_lokasi(event: Message | CallbackQuery) -> None:
+    """Menampilkan menu profil lokasi GPS magang."""
+    chat_id, target_msg = await unpack_event(event)
+    if not target_msg:
+        return
+
+    text, markup = await _build_locations_view(chat_id)
+    await target_msg.answer(text, parse_mode="HTML", reply_markup=markup)
 
 
 @router.callback_query(F.data.startswith("log_loc_switch_"))
@@ -53,11 +68,12 @@ async def cb_switch_location_profile(callback: CallbackQuery) -> None:
     """Ganti profil lokasi aktif."""
     await callback.answer()
     p_key = callback.data.split("_")[3]
-    await set_active_location_profile(callback.from_user.id, p_key)
-    profiles = await get_user_location_profiles(callback.from_user.id)
+    chat_id = callback.from_user.id
+    await set_active_location_profile(chat_id, p_key)
     if callback.message:
+        text, markup = await _build_locations_view(chat_id)
         try:
-            await callback.message.edit_reply_markup(reply_markup=get_locations_menu_keyboard(profiles, p_key))
+            await callback.message.edit_text(text, parse_mode="HTML", reply_markup=markup)
         except Exception:
             pass
 

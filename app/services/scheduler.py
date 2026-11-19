@@ -282,15 +282,16 @@ def setup_scheduler(bot: Bot) -> AsyncIOScheduler:
         replace_existing=True,
     )
 
-    # 4. Job auto-backup database SQLite setiap hari pukul 03:00 WIB
+    # 4. Job auto-backup database SQLite seminggu sekali (Minggu pukul 03:00 WIB)
     scheduler.add_job(
         run_scheduled_backup,
         trigger="cron",
+        day_of_week="sun",
         hour=3,
         minute=0,
         second=0,
         args=[bot],
-        id="daily_sqlite_backup_job",
+        id="weekly_sqlite_backup_job",
         replace_existing=True,
     )
 

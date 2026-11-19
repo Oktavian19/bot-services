@@ -733,14 +733,24 @@ class TestAsyncCore(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(mock_bot.send_document.await_count, 1)
         self.assertIn("Manual (/backup)", mock_bot.send_document.await_args.kwargs["caption"])
 
-        # 4. Scheduled backup & job registration di APScheduler
+        # 4. Scheduled backup & job registration di APScheduler (mingguan)
         await run_scheduled_backup(mock_bot)
         self.assertEqual(mock_bot.send_document.await_count, 2)
-        self.assertIn("Terjadwal (Harian)", mock_bot.send_document.await_args.kwargs["caption"])
+        self.assertIn("Terjadwal (Mingguan)", mock_bot.send_document.await_args.kwargs["caption"])
 
         sched = setup_scheduler(mock_bot)
-        job_ids = {j.id for j in sched.get_jobs()}
-        self.assertIn("daily_sqlite_backup_job", job_ids)
+        jobs = {j.id: j for j in sched.get_jobs()}
+        self.assertNotIn("daily_sqlite_backup_job", jobs)
+        self.assertIn("weekly_sqlite_backup_job", jobs)
+
+        backup_job = jobs["weekly_sqlite_backup_job"]
+        first_fire = backup_job.trigger.get_next_fire_time(None, datetime(2026, 11, 20, 4, 0, tzinfo=sched.timezone))
+        self.assertIsNotNone(first_fire)
+        self.assertEqual(first_fire.weekday(), 6)  # 6 = Minggu (Sunday)
+        self.assertEqual((first_fire.hour, first_fire.minute, first_fire.second), (3, 0, 0))
+        second_fire = backup_job.trigger.get_next_fire_time(first_fire, first_fire)
+        self.assertIsNotNone(second_fire)
+        self.assertEqual((second_fire - first_fire).days, 7)
 
 
 if __name__ == "__main__":

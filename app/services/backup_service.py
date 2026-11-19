@@ -99,7 +99,7 @@ def create_sqlite_backup_archive(output_dir: Path) -> tuple[Path, list[dict[str,
 
 def _format_backup_caption(zip_size: int, stats: list[dict[str, Any]], scheduled: bool) -> str:
     """Menyusun caption HTML ringkasan backup untuk pesan Telegram."""
-    mode_label = "Terjadwal (Harian)" if scheduled else "Manual (/backup)"
+    mode_label = "Terjadwal (Mingguan)" if scheduled else "Manual (/backup)"
     now_str = get_local_now().strftime("%Y-%m-%d %H:%M:%S WIB")
     lines = [
         f"🗄 <b>Backup Database SQLite — {mode_label}</b>",
@@ -148,7 +148,7 @@ async def send_sqlite_backup_to_telegram(
 
 
 async def run_scheduled_backup(bot: Bot) -> None:
-    """Job scheduler untuk auto-backup harian ke ADMIN_CHAT_ID."""
+    """Job scheduler untuk auto-backup mingguan ke ADMIN_CHAT_ID."""
     settings = get_settings()
     if not settings.ADMIN_CHAT_ID:
         logger.warning("[BACKUP] ADMIN_CHAT_ID belum diatur; auto-backup terjadwal dilewati.")

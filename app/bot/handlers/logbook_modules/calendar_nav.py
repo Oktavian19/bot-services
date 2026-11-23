@@ -2,7 +2,7 @@
 Sub-router Logbook untuk memuat riwayat DERMAGA dan navigasi kalender bulanan.
 """
 
-from datetime import datetime
+from datetime import datetime, timedelta
 import html
 from aiogram import F, Router
 from aiogram.types import CallbackQuery, Message
@@ -15,7 +15,7 @@ from app.bot.keyboards.logbook import (
     get_month_calendar_keyboard,
 )
 from app.core.logger import logger
-from app.database.logbook_repo import get_user_by_chat_id
+from app.database.logbook_repo import get_user_by_chat_id, set_placeholder_snooze
 from app.services.logbook_service import fetch_dermaga_table, format_month_name, group_entries_by_month
 
 router = Router(name="logbook_calendar_nav_router")
@@ -177,3 +177,87 @@ async def cb_calendar_pick_entry(callback: CallbackQuery) -> None:
     }
     if callback.message:
         await _send_edit_detail_view(chat_id, callback.message)
+
+
+@router.callback_query(F.data.startswith("log_eddirect_"))
+async def cb_calendar_direct_edit(callback: CallbackQuery) -> None:
+    """Membuka sesi edit langsung untuk tanggal/web_id tertentu dari notifikasi pengingat."""
+    await callback.answer()
+    chat_id = callback.from_user.id
+    target = callback.data.removeprefix("log_eddirect_")
+
+    if callback.message:
+        await callback.message.edit_text("⏳ <i>Sedang memuat entri logbook dari DERMAGA...</i>", parse_mode="HTML")
+
+    try:
+        entries = await fetch_dermaga_table(chat_id)
+        if not entries:
+            if callback.message:
+                await callback.message.edit_text(
+                    "❌ Tidak ditemukan entri logbook di DERMAGA.",
+                    reply_markup=get_back_to_logbook_keyboard(),
+                )
+            return
+
+        selected_entry = None
+        for e in entries:
+            if str(e.get("web_id")) == target or e.get("tanggal_iso") == target or target in str(e.get("tanggal_text", "")):
+                selected_entry = e
+                break
+
+        if not selected_entry:
+            # Fallback ke entri paling atas jika target spesifik tidak ditemukan
+            selected_entry = entries[0]
+
+        grouped = group_entries_by_month(entries)
+        months_list = sorted(grouped.keys(), reverse=True)
+        tgl_iso = str(selected_entry.get("tanggal_iso", ""))
+        current_month = tgl_iso[:7] if len(tgl_iso) >= 7 else (months_list[0] if months_list else datetime.now().strftime("%Y-%m"))
+
+        _calendar_edit_sessions[chat_id] = {
+            "all_entries": entries,
+            "by_month": grouped,
+            "months": months_list,
+            "selected_month": current_month,
+            "web_id": str(selected_entry.get("web_id") or ""),
+            "tanggal": str(selected_entry.get("tanggal_iso", "")) or str(selected_entry.get("tanggal_text", "")),
+            "jam_masuk": str(selected_entry.get("jam_masuk") or "07:10"),
+            "jam_pulang": str(selected_entry.get("jam_pulang") or "16:25"),
+            "deskripsi": str(selected_entry.get("pekerjaan") or ""),
+            "keterangan": str(selected_entry.get("keterangan") or "hadir"),
+            "original": {
+                "jam_masuk": str(selected_entry.get("jam_masuk") or "07:10"),
+                "jam_pulang": str(selected_entry.get("jam_pulang") or "16:25"),
+                "deskripsi": str(selected_entry.get("pekerjaan") or ""),
+            },
+        }
+
+        if callback.message:
+            await _send_edit_detail_view(chat_id, callback.message)
+
+    except Exception as e:
+        logger.error(f"[LOGBOOK-DIRECT-EDIT] Gagal memuat entri direct edit untuk {chat_id}: {e}")
+        if callback.message:
+            await callback.message.edit_text(
+                f"❌ Gagal memuat data DERMAGA: {e}",
+                reply_markup=get_back_to_logbook_keyboard(),
+            )
+
+
+@router.callback_query(F.data == "log_snooze_placeholder")
+async def cb_snooze_placeholder(callback: CallbackQuery) -> None:
+    """Menunda pengingat entri placeholder '-' selama 2 jam."""
+    await callback.answer()
+    chat_id = callback.from_user.id
+    now = datetime.now()
+    snooze_until = (now + timedelta(hours=2)).strftime("%Y-%m-%d %H:%M:%S")
+    await set_placeholder_snooze(chat_id, snooze_until)
+
+    text = (
+        "🔕 <b>Pengingat Ditunda</b>\n\n"
+        "Pengingat entri logbook <code>-</code> berhasil ditunda selama <b>2 jam</b>.\n"
+        "Bot akan mengingatkan kembali jika logbook belum diperbarui setelah waktu tunda berakhir."
+    )
+    if callback.message:
+        await callback.message.edit_text(text, parse_mode="HTML")
+

@@ -154,6 +154,20 @@ async def init_logbook_db() -> None:
             )
         """)
 
+        # 6. State Pengingat Entri Placeholder ("-")
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS logbook_placeholder_reminders (
+                chat_id INTEGER PRIMARY KEY,
+                last_checked_at TEXT,
+                next_check_at TEXT,
+                snooze_until TEXT,
+                last_notified_at TEXT,
+                pending_dates TEXT,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY (chat_id) REFERENCES logbook_credentials(chat_id) ON DELETE CASCADE
+            )
+        """)
+
     logger.info("[DB-LOGBOOK] Database logbook.db berhasil diverifikasi & diinisialisasi (Async).")
 
 
@@ -742,4 +756,123 @@ async def set_weekly_reminder_status(
 async def stop_weekly_reminder(chat_id: int, week_start_date: str) -> None:
     """Menghentikan pengingat tanda tangan logbook untuk minggu tertentu."""
     await set_weekly_reminder_status(chat_id, week_start_date, status="stopped")
+
+
+# --- PLACEHOLDER ("-") REMINDERS REPO ---
+
+async def get_placeholder_reminder_state(chat_id: int) -> Optional[dict[str, Any]]:
+    """Mengambil status jadwal dan penundaan pengingat entri placeholder ('-') user."""
+    settings = get_settings()
+    async with get_db_connection(settings.LOGBOOK_DB_PATH) as conn:
+        cursor = await conn.execute(
+            "SELECT * FROM logbook_placeholder_reminders WHERE chat_id = ?",
+            (chat_id,),
+        )
+        row = await cursor.fetchone()
+        if not row:
+            return None
+        res = dict(row)
+        if res.get("pending_dates"):
+            try:
+                res["pending_dates"] = json.loads(res["pending_dates"])
+            except Exception:
+                res["pending_dates"] = []
+        else:
+            res["pending_dates"] = []
+        return res
+
+
+async def update_placeholder_check_schedule(
+    chat_id: int,
+    next_check_at: str,
+    pending_dates: Optional[List[str]] = None,
+    notified: bool = False,
+) -> None:
+    """Memperbarui waktu cek berikutnya, entri pending, dan waktu notifikasi terakhir."""
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    dates_json = json.dumps(pending_dates or [], ensure_ascii=False)
+    settings = get_settings()
+
+    async with get_db_connection(settings.LOGBOOK_DB_PATH) as conn:
+        existing = await conn.execute(
+            "SELECT chat_id FROM logbook_placeholder_reminders WHERE chat_id = ?",
+            (chat_id,),
+        )
+        row = await existing.fetchone()
+        if row:
+            if notified:
+                await conn.execute(
+                    """
+                    UPDATE logbook_placeholder_reminders
+                    SET last_checked_at = ?, next_check_at = ?, pending_dates = ?, last_notified_at = ?, updated_at = ?
+                    WHERE chat_id = ?
+                    """,
+                    (now_str, next_check_at, dates_json, now_str, now_str, chat_id),
+                )
+            else:
+                await conn.execute(
+                    """
+                    UPDATE logbook_placeholder_reminders
+                    SET last_checked_at = ?, next_check_at = ?, pending_dates = ?, updated_at = ?
+                    WHERE chat_id = ?
+                    """,
+                    (now_str, next_check_at, dates_json, now_str, chat_id),
+                )
+        else:
+            await conn.execute(
+                """
+                INSERT INTO logbook_placeholder_reminders
+                (chat_id, last_checked_at, next_check_at, snooze_until, last_notified_at, pending_dates, updated_at)
+                VALUES (?, ?, ?, NULL, ?, ?, ?)
+                """,
+                (
+                    chat_id,
+                    now_str,
+                    next_check_at,
+                    now_str if notified else None,
+                    dates_json,
+                    now_str,
+                ),
+            )
+
+
+async def set_placeholder_snooze(chat_id: int, snooze_until: str) -> None:
+    """Mengatur penundaan (snooze) pengingat entri placeholder hingga waktu tertentu."""
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    settings = get_settings()
+    async with get_db_connection(settings.LOGBOOK_DB_PATH) as conn:
+        existing = await conn.execute(
+            "SELECT chat_id FROM logbook_placeholder_reminders WHERE chat_id = ?",
+            (chat_id,),
+        )
+        if await existing.fetchone():
+            await conn.execute(
+                "UPDATE logbook_placeholder_reminders SET snooze_until = ?, updated_at = ? WHERE chat_id = ?",
+                (snooze_until, now_str, chat_id),
+            )
+        else:
+            await conn.execute(
+                """
+                INSERT INTO logbook_placeholder_reminders
+                (chat_id, last_checked_at, next_check_at, snooze_until, last_notified_at, pending_dates, updated_at)
+                VALUES (?, NULL, NULL, ?, NULL, '[]', ?)
+                """,
+                (chat_id, snooze_until, now_str),
+            )
+
+
+async def clear_placeholder_state(chat_id: int) -> None:
+    """Mengosongkan pending dates dan snooze jika tidak ada lagi entri placeholder."""
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    settings = get_settings()
+    async with get_db_connection(settings.LOGBOOK_DB_PATH) as conn:
+        await conn.execute(
+            """
+            UPDATE logbook_placeholder_reminders
+            SET pending_dates = '[]', snooze_until = NULL, updated_at = ?
+            WHERE chat_id = ?
+            """,
+            (now_str, chat_id),
+        )
+
 

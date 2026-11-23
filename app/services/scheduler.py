@@ -15,16 +15,26 @@ import pytz
 from app.core.config import get_settings
 from app.core.logger import logger
 from app.database.logbook_repo import (
+    clear_placeholder_state,
     complete_reminder_for_today,
     get_active_reminder_users,
     get_or_create_reminder_state,
+    get_placeholder_reminder_state,
+    get_user_location,
     get_weekly_reminder_state,
     has_today_draft_or_submission,
     set_weekly_reminder_status,
+    update_placeholder_check_schedule,
     update_reminder_state,
 )
 from app.services.backup_service import run_scheduled_backup
-from app.services.logbook_service import fetch_dermaga_table, fetch_weekly_logbook_cards
+from app.services.logbook_service import (
+    check_monitoring_today,
+    fetch_dermaga_table,
+    fetch_weekly_logbook_cards,
+    find_placeholder_entries,
+    submit_dermaga_entry,
+)
 from app.services.network_service import network_monitor_task
 from app.services.reminder_service import get_local_now, process_due_reminders
 
@@ -244,6 +254,197 @@ async def process_weekly_signature_reminders(bot: Bot) -> None:
         logger.error(f"[LOGBOOK-WEEKLY - ERROR] Error pada evaluasi pengingat mingguan: {e}")
 
 
+async def process_emergency_autofill(bot: Bot) -> None:
+    """
+    Auto-fill darurat pada pukul 23:50 WIB jika user belum mengisi logbook hari ini.
+    Mengirimkan entri logbook dengan deskripsi '-' dan jam kerja standar ke DERMAGA
+    khusus pada hari aktif pengingat (reminder_days).
+    """
+    now = get_local_now()
+    today_str = now.strftime("%Y-%m-%d")
+
+    try:
+        active_users = await get_active_reminder_users()
+        for user in active_users:
+            chat_id = user["chat_id"]
+            reminder_days_str = user.get("reminder_days", "0,1,2,3,4")
+
+            if not reminder_days_str or not reminder_days_str.strip():
+                continue
+            active_days = [int(x.strip()) for x in reminder_days_str.split(",") if x.strip().isdigit()]
+            if now.weekday() not in active_days:
+                continue
+
+            # Cek apakah sudah ada draf / submission hari ini
+            if await has_today_draft_or_submission(chat_id, today_str):
+                await complete_reminder_for_today(chat_id, today_str)
+                continue
+
+            # Cek apakah di DERMAGA sudah terisi
+            try:
+                mon_info = await check_monitoring_today(chat_id, today_str)
+                if mon_info.get("exists"):
+                    logger.info(f"[LOGBOOK-AUTOFIL-2350] User {chat_id} sudah mengisi logbook di DERMAGA untuk {today_str}.")
+                    await complete_reminder_for_today(chat_id, today_str)
+                    continue
+            except Exception as e:
+                logger.warning(f"[LOGBOOK-AUTOFIL-2350] Cek monitoring DERMAGA user {chat_id} gagal: {e}")
+
+            # Lakukan auto-fill darurat dengan deskripsi '-'
+            lat, lng, acc = await get_user_location(chat_id)
+            ok, msg = await submit_dermaga_entry(
+                chat_id=chat_id,
+                date=today_str,
+                summary="-",
+                jam_masuk="07:10",
+                jam_pulang="16:25",
+                lat=lat,
+                lng=lng,
+                accuracy=acc,
+            )
+
+            if ok:
+                await complete_reminder_for_today(chat_id, today_str)
+                logger.info(f"[LOGBOOK-AUTOFIL-2350] Auto-fill darurat '-' BERHASIL untuk User {chat_id} ({today_str}).")
+
+                text = (
+                    "🚨 <b>Logbook Darurat Terisi Otomatis!</b>\n\n"
+                    f"Halo <b>{html.escape(str(user['username']))}</b>, sistem mendeteksi Anda belum mengisi logbook hari ini "
+                    f"(<code>{today_str}</code>) hingga pukul <b>23:50 WIB</b>.\n\n"
+                    "🛡️ Untuk mencegah hangusnya batas pengisian harian DERMAGA, bot telah secara otomatis mengisi absensi "
+                    "hari ini dengan deskripsi sementara <code>-</code>.\n\n"
+                    "<i>⚠️ Mohon segera perbarui deskripsi pekerjaan sebenarnya melalui tombol di bawah agar logbook Anda valid saat diverifikasi!</i>"
+                )
+                keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="✏️ Edit Sekarang", callback_data=f"log_eddirect_{today_str}")],
+                    [InlineKeyboardButton(text="📖 Buka Menu Logbook", callback_data="log_menu_back")]
+                ])
+                try:
+                    await bot.send_message(chat_id=chat_id, text=text, parse_mode="HTML", reply_markup=keyboard)
+                except Exception as send_err:
+                    logger.error(f"[LOGBOOK-AUTOFIL-2350] Gagal mengirim notif ke {chat_id}: {send_err}")
+            else:
+                logger.error(f"[LOGBOOK-AUTOFIL-2350] Auto-fill darurat GAGAL untuk User {chat_id}: {msg}")
+                fail_text = (
+                    "⚠️ <b>Peringatan: Gagal Auto-Fill Logbook Darurat!</b>\n\n"
+                    f"Halo <b>{html.escape(str(user['username']))}</b>, bot mencoba mengisi logbook darurat hari ini "
+                    f"(<code>{today_str}</code>) sebelum tengah malam, namun gagal: <i>{html.escape(str(msg))}</i>.\n\n"
+                    "Silakan segera isi manual melalui portal DERMAGA sebelum 23:59 WIB:\n"
+                    "🔗 <a href='https://jti.polinema.ac.id/dermaga/mahasiswa/monitoring'>Buka Monitoring DERMAGA</a>"
+                )
+                try:
+                    await bot.send_message(chat_id=chat_id, text=fail_text, parse_mode="HTML")
+                except Exception as send_err:
+                    logger.error(f"[LOGBOOK-AUTOFIL-2350] Gagal mengirim alert kegagalan ke {chat_id}: {send_err}")
+
+    except Exception as e:
+        logger.error(f"[LOGBOOK-AUTOFIL-2350 - ERROR] Error pada eksekusi auto-fill darurat: {e}")
+
+
+async def process_placeholder_checks(bot: Bot) -> None:
+    """
+    Pengecekan berkala entri logbook dengan deskripsi '-' di DERMAGA.
+    Berjalan pada jam aktif 07:00 - 22:00 WIB dengan interval acak 40-60 menit per user.
+    """
+    now = get_local_now()
+
+    # Hanya berjalan pada jam operasional 07:00 - 22:00 WIB
+    if not (7 <= now.hour < 22):
+        return
+
+    now_naive = now.replace(tzinfo=None)
+
+    try:
+        active_users = await get_active_reminder_users()
+        for user in active_users:
+            chat_id = user["chat_id"]
+
+            state = await get_placeholder_reminder_state(chat_id)
+            if state:
+                # Cek apakah sedang dalam periode snooze (tunda pengingat)
+                snooze_str = state.get("snooze_until")
+                if snooze_str:
+                    try:
+                        snooze_dt = datetime.strptime(snooze_str, "%Y-%m-%d %H:%M:%S")
+                        if now_naive < snooze_dt:
+                            continue
+                    except Exception:
+                        pass
+
+                # Cek apakah belum tiba waktu pengecekan acak berikutnya
+                next_check_str = state.get("next_check_at")
+                if next_check_str:
+                    try:
+                        next_check_dt = datetime.strptime(next_check_str, "%Y-%m-%d %H:%M:%S")
+                        if now_naive < next_check_dt:
+                            continue
+                    except Exception:
+                        pass
+
+            # Saatnya mengecek DERMAGA
+            try:
+                entries = await fetch_dermaga_table(chat_id)
+            except Exception as e:
+                logger.warning(f"[LOGBOOK-PLACEHOLDER-CHECK] Gagal ambil tabel DERMAGA user {chat_id}: {e}")
+                delay_mins = random.randint(40, 60)
+                next_check_dt = now_naive + timedelta(minutes=delay_mins)
+                await update_placeholder_check_schedule(chat_id, next_check_dt.strftime("%Y-%m-%d %H:%M:%S"))
+                continue
+
+            placeholders = find_placeholder_entries(entries)
+            delay_mins = random.randint(40, 60)
+            next_check_dt = now_naive + timedelta(minutes=delay_mins)
+            next_check_str = next_check_dt.strftime("%Y-%m-%d %H:%M:%S")
+
+            if not placeholders:
+                # Bersihkan status jika sudah tidak ada entri '-'
+                await clear_placeholder_state(chat_id)
+                await update_placeholder_check_schedule(chat_id, next_check_str, pending_dates=[], notified=False)
+                continue
+
+            # Ada entri '-' yang ditemukan!
+            pending_dates = [p.get("tanggal_iso") or p.get("tanggal_text") or "-" for p in placeholders]
+
+            lines = []
+            for p in placeholders[:5]:
+                tgl = p.get("tanggal_iso") or p.get("tanggal_text") or "-"
+                wid = p.get("web_id") or "-"
+                lines.append(f"• 📅 <code>{tgl}</code> (ID: <code>#{wid}</code>)")
+            if len(placeholders) > 5:
+                lines.append(f"<i>...dan {len(placeholders) - 5} entri lainnya.</i>")
+
+            text = (
+                "⚠️ <b>Pengingat: Logbook dengan Deskripsi '-' Terdeteksi!</b>\n\n"
+                f"Halo <b>{html.escape(str(user['username']))}</b>, ditemukan entri logbook di DERMAGA dengan "
+                "deskripsi sementara <code>-</code> yang belum dilengkapi:\n\n"
+                + "\n".join(lines) + "\n\n"
+                "Mohon segera lengkapi deskripsi pekerjaan Anda sebelum diajukan / diverifikasi!"
+            )
+
+            first_p = placeholders[0]
+            first_target = first_p.get("web_id") or first_p.get("tanggal_iso") or first_p.get("tanggal_text")
+            btn_label = f"✏️ Edit Sekarang ({first_p.get('tanggal_iso') or first_p.get('tanggal_text')})" if len(placeholders) == 1 else "✏️ Edit Entri Teratas"
+
+            keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text=btn_label, callback_data=f"log_eddirect_{first_target}")],
+                [InlineKeyboardButton(text="🔕 Tunda Pengingat (2 Jam)", callback_data="log_snooze_placeholder")],
+            ])
+
+            try:
+                await bot.send_message(chat_id=chat_id, text=text, parse_mode="HTML", reply_markup=keyboard)
+                await update_placeholder_check_schedule(chat_id, next_check_str, pending_dates=pending_dates, notified=True)
+                logger.info(
+                    f"[LOGBOOK-PLACEHOLDER-CHECK] Pengingat '-' terkirim ke User {chat_id} ({len(placeholders)} entri). "
+                    f"Cek berikutnya acak dalam {delay_mins} menit ({next_check_str})."
+                )
+            except Exception as send_err:
+                logger.error(f"[LOGBOOK-PLACEHOLDER-CHECK] Gagal kirim notif '-' ke {chat_id}: {send_err}")
+                await update_placeholder_check_schedule(chat_id, next_check_str, pending_dates=pending_dates, notified=False)
+
+    except Exception as e:
+        logger.error(f"[LOGBOOK-PLACEHOLDER-CHECK - ERROR] Error pada pengecekan entri placeholder: {e}")
+
+
 def setup_scheduler(bot: Bot) -> AsyncIOScheduler:
     """Mengonfigurasi dan menjalankan AsyncIOScheduler untuk tugas-tugas terjadwal."""
     settings = get_settings()
@@ -292,6 +493,28 @@ def setup_scheduler(bot: Bot) -> AsyncIOScheduler:
         second=0,
         args=[bot],
         id="weekly_sqlite_backup_job",
+        replace_existing=True,
+    )
+
+    # 5. Job auto-fill darurat logbook jam 23:50 WIB
+    scheduler.add_job(
+        process_emergency_autofill,
+        trigger="cron",
+        hour=23,
+        minute=50,
+        second=0,
+        args=[bot],
+        id="emergency_autofill_job",
+        replace_existing=True,
+    )
+
+    # 6. Job cek berkala acak 40-60 menit untuk entri logbook "-" di DERMAGA (evaluasi per menit)
+    scheduler.add_job(
+        process_placeholder_checks,
+        trigger="cron",
+        second=30,
+        args=[bot],
+        id="placeholder_checker_job",
         replace_existing=True,
     )
 

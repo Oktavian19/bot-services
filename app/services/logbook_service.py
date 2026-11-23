@@ -315,6 +315,7 @@ async def fetch_dermaga_table(chat_id: int) -> List[dict[str, Any]]:
 
                     entries.append({
                         "web_id": web_id,
+                        "has_btn_edit": bool(btn_edit),
                         "tanggal_iso": final_tgl_iso,
                         "tanggal_text": tgl_text,
                         "jam_masuk": final_masuk,
@@ -326,6 +327,21 @@ async def fetch_dermaga_table(chat_id: int) -> List[dict[str, Any]]:
                     })
 
         return entries
+
+
+def find_placeholder_entries(entries: List[dict[str, Any]]) -> List[dict[str, Any]]:
+    """
+    Menyaring entri logbook yang memiliki tombol edit aktif di DERMAGA
+    dan deskripsi pekerjaannya adalah placeholder ('-', '--', atau kosong).
+    """
+    placeholders = []
+    for e in entries:
+        desk = (e.get("pekerjaan") or "").strip()
+        is_placeholder = desk in ("-", "--", "---", "")
+        has_edit = e.get("has_btn_edit", True) if "has_btn_edit" in e else bool(e.get("web_id"))
+        if is_placeholder and has_edit and e.get("web_id"):
+            placeholders.append(e)
+    return placeholders
 
 
 def parse_weekly_cards_from_html(html_text: str) -> List[dict[str, Any]]:
